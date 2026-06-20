@@ -1,0 +1,451 @@
+/**
+ * The pendulum primitive family: pivot + rope + bob.
+ *
+ * A "pendulum" in the spike is three separate objects:
+ *   - pendulum_pivot : a fixed point (ceiling mount, drawn as a hatched bar)
+ *   - rope           : a line from pivot to bob (drawn as a vector-like line)
+ *   - pendulum_bob   : the mass at the end (drawn as a circle)
+ *
+ * The bob is attached to the pivot via a rope-length relation. The pendulum
+ * "swing angle" lives in the bob's params. The solver keeps the bob at the
+ * right world position when the angle changes.
+ *
+ * We expose them as 3 primitives rather than 1 composite so the user can
+ * drag just the bob, or just the pivot, or replace the rope with a spring.
+ */
+
+import { registerPrimitive } from "../core/registry";
+import type { PrimitiveDefinition } from "../core/registry";
+
+const pivot: PrimitiveDefinition = {
+  type: "pendulum_pivot",
+  category: "mechanics",
+  label: "Pivot (ceiling mount)",
+  description: "A fixed point where a rope, pendulum, or spring can attach.",
+  anchors: ["center", "bottom"],
+  params: [
+    { name: "barWidth", type: "number", default: 60, min: 10, max: 200, unit: "px", description: "Width of the hatched bar" },
+    { name: "hatchSpacing", type: "number", default: 8, min: 4, max: 20, unit: "px", description: "Hatch line spacing" },
+  ],
+  render: ({ transform, params, style: rawStyle }) => {
+    const style = (rawStyle ?? {}) as { stroke?: string; strokeWidth?: number; fill?: string; rotation?: number };
+
+    const w = (params.barWidth as number) ?? 60;
+    const hatch = (params.hatchSpacing as number) ?? 8;
+    const stroke = style?.stroke ?? "#333";
+    const sw = style?.strokeWidth ?? 1.5;
+    // Hatched bar at the top
+    const lines: React.ReactNode[] = [];
+    for (let i = 0; i <= w; i += hatch) {
+      lines.push(
+        <line
+          key={i}
+          x1={transform.x - w / 2 + i}
+          y1={transform.y}
+          x2={transform.x - w / 2 + i - 8}
+          y2={transform.y + 8}
+          stroke={stroke}
+          strokeWidth={sw * 0.7}
+        />
+      );
+    }
+    return (
+      <g>
+        <rect
+          x={transform.x - w / 2}
+          y={transform.y}
+          width={w}
+          height={4}
+          fill={stroke}
+        />
+        {lines}
+      </g>
+    );
+  },
+};
+
+const bob: PrimitiveDefinition = {
+  type: "pendulum_bob",
+  category: "mechanics",
+  label: "Pendulum bob (mass)",
+  description: "A point mass hanging from a rope. Adjust angleDeg to swing.",
+  anchors: ["center", "top"],
+  params: [
+    { name: "radius", type: "number", default: 18, min: 4, max: 60, unit: "px" },
+    { name: "angleDeg", type: "number", default: 30, min: -90, max: 90, step: 1, unit: "°" },
+    { name: "ropeLength", type: "number", default: 180, min: 30, max: 400, unit: "px" },
+    { name: "mass", type: "number", default: 1, min: 0.01, max: 1000, step: 0.1, unit: "kg" },
+    { name: "fill", type: "color", default: "#fff" },
+  ],
+  render: ({ transform, params, style: rawStyle }) => {
+    const style = (rawStyle ?? {}) as { stroke?: string; strokeWidth?: number; fill?: string; rotation?: number };
+
+    const r = (params.radius as number) ?? 18;
+    const fill = (params.fill as string) ?? "#fff";
+    const stroke = style?.stroke ?? "#222";
+    const sw = style?.strokeWidth ?? 1.5;
+    return (
+      <g>
+        <circle cx={transform.x} cy={transform.y} r={r} fill={fill} stroke={stroke} strokeWidth={sw} />
+        <text
+          x={transform.x}
+          y={transform.y + r + 14}
+          textAnchor="middle"
+          fontSize={11}
+          fill="#444"
+          fontFamily="serif"
+          fontStyle="italic"
+        >
+          m
+        </text>
+      </g>
+    );
+  },
+};
+
+const rope: PrimitiveDefinition = {
+  type: "rope",
+  category: "mechanics",
+  label: "Rope / string",
+  description: "A massless inextensible rope between two points.",
+  anchors: ["start", "end"],
+  params: [
+    { name: "from", type: "string", default: "" },
+    { name: "to", type: "string", default: "" },
+    { name: "color", type: "color", default: "#444" },
+    { name: "thickness", type: "number", default: 1.5, min: 0.5, max: 5, step: 0.1, unit: "px" },
+  ],
+  // rope needs access to other objects to find endpoints, so render is
+  // handled specially in SceneRenderer. We provide a stub here.
+  render: () => null,
+};
+
+const incline: PrimitiveDefinition = {
+  type: "incline",
+  category: "mechanics",
+  label: "Inclined surface",
+  description: "An angled line, hatched on the underside. Blocks and spheres can rest on it.",
+  anchors: ["start", "end", "top", "center"],
+  params: [
+    { name: "length", type: "number", default: 220, min: 40, max: 600, unit: "px" },
+    { name: "angleDeg", type: "number", default: 25, min: -89, max: 89, step: 1, unit: "°" },
+    { name: "thickness", type: "number", default: 4, min: 1, max: 12, unit: "px" },
+    { name: "hatching", type: "boolean", default: true },
+  ],
+  render: ({ transform, params, style: rawStyle }) => {
+    const style = (rawStyle ?? {}) as { stroke?: string; strokeWidth?: number; fill?: string; rotation?: number };
+
+    const length = (params.length as number) ?? 220;
+    const angleDeg = (params.angleDeg as number) ?? 25;
+    const thickness = (params.thickness as number) ?? 4;
+    const hatching = (params.hatching as boolean) ?? true;
+    const stroke = style?.stroke ?? "#222";
+    const sw = style?.strokeWidth ?? thickness;
+
+    const rad = (angleDeg * Math.PI) / 180;
+    const x2 = transform.x + length * Math.cos(rad);
+    const y2 = transform.y - length * Math.sin(rad); // screen y inverted
+
+    const hatchLines: React.ReactNode[] = [];
+    if (hatching) {
+      const spacing = 12;
+      for (let i = 0; i <= length; i += spacing) {
+        const sx = transform.x + i * Math.cos(rad);
+        const sy = transform.y - i * Math.sin(rad);
+        // hatch line goes perpendicular-downward from the surface
+        const px = sx - 10 * Math.sin(rad);
+        const py = sy - 10 * Math.cos(rad);
+        hatchLines.push(
+          <line
+            key={i}
+            x1={sx}
+            y1={sy}
+            x2={px}
+            y2={py}
+            stroke={stroke}
+            strokeWidth={sw * 0.5}
+            opacity={0.5}
+          />
+        );
+      }
+    }
+
+    return (
+      <g>
+        {hatchLines}
+        <line x1={transform.x} y1={transform.y} x2={x2} y2={y2} stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
+      </g>
+    );
+  },
+};
+
+const block: PrimitiveDefinition = {
+  type: "block",
+  category: "mechanics",
+  label: "Block",
+  description: "A rectangle (drawn block). Common in inclined-plane problems.",
+  anchors: ["center", "top", "bottom", "left", "right"],
+  params: [
+    { name: "width", type: "number", default: 60, min: 8, max: 200, unit: "px" },
+    { name: "height", type: "number", default: 40, min: 8, max: 200, unit: "px" },
+    { name: "fill", type: "color", default: "#fff" },
+    { name: "mass", type: "number", default: 2, min: 0.01, max: 1000, step: 0.1, unit: "kg" },
+  ],
+  render: ({ transform, params, style: rawStyle }) => {
+    const style = (rawStyle ?? {}) as { stroke?: string; strokeWidth?: number; fill?: string; rotation?: number };
+
+    const w = (params.width as number) ?? 60;
+    const h = (params.height as number) ?? 40;
+    const fill = (params.fill as string) ?? "#fff";
+    const stroke = style?.stroke ?? "#222";
+    const sw = style?.strokeWidth ?? 1.5;
+    return (
+      <g transform={`rotate(${style?.rotation ?? 0} ${transform.x} ${transform.y})`}>
+        <rect
+          x={transform.x - w / 2}
+          y={transform.y - h / 2}
+          width={w}
+          height={h}
+          fill={fill}
+          stroke={stroke}
+          strokeWidth={sw}
+          rx={2}
+        />
+      </g>
+    );
+  },
+};
+
+const ground: PrimitiveDefinition = {
+  type: "ground",
+  category: "mechanics",
+  label: "Ground",
+  description: "A horizontal hatched surface. Blocks rest on it.",
+  anchors: ["start", "end", "center", "top"],
+  params: [
+    { name: "extent", type: "number", default: 600, min: 50, max: 2000, unit: "px" },
+    { name: "thickness", type: "number", default: 2, min: 1, max: 8, unit: "px" },
+  ],
+  render: ({ transform, params, style: rawStyle }) => {
+    const style = (rawStyle ?? {}) as { stroke?: string; strokeWidth?: number; fill?: string; rotation?: number };
+
+    const extent = (params.extent as number) ?? 600;
+    const sw = style?.strokeWidth ?? 2;
+    const stroke = style?.stroke ?? "#333";
+    const hatchLines: React.ReactNode[] = [];
+    for (let i = 0; i <= extent; i += 12) {
+      hatchLines.push(
+        <line
+          key={i}
+          x1={transform.x - extent / 2 + i}
+          y1={transform.y}
+          x2={transform.x - extent / 2 + i - 6}
+          y2={transform.y + 6}
+          stroke={stroke}
+          strokeWidth={sw * 0.8}
+        />
+      );
+    }
+    return (
+      <g>
+        {hatchLines}
+        <line
+          x1={transform.x - extent / 2}
+          y1={transform.y}
+          x2={transform.x + extent / 2}
+          y2={transform.y}
+          stroke={stroke}
+          strokeWidth={sw}
+        />
+      </g>
+    );
+  },
+};
+
+const vector: PrimitiveDefinition = {
+  type: "vector",
+  category: "annotation",
+  label: "Vector (force / velocity)",
+  description: "An arrow with optional magnitude and label. Use for forces, velocities, etc.",
+  anchors: ["center", "start", "end"],
+  params: [
+    { name: "magnitude", type: "number", default: 80, min: 5, max: 400, unit: "px" },
+    { name: "angleDeg", type: "number", default: 0, min: -360, max: 360, step: 1, unit: "°" },
+    { name: "color", type: "color", default: "#c0392b" },
+    { name: "thickness", type: "number", default: 2, min: 0.5, max: 8, step: 0.1, unit: "px" },
+    { name: "dashed", type: "boolean", default: false },
+    { name: "label", type: "string", default: "F" },
+  ],
+  render: ({ transform, params }) => {
+    const mag = (params.magnitude as number) ?? 80;
+    const angleDeg = (params.angleDeg as number) ?? 0;
+    const color = (params.color as string) ?? "#c0392b";
+    const thickness = (params.thickness as number) ?? 2;
+    const dashed = (params.dashed as boolean) ?? false;
+    const label = (params.label as string) ?? "F";
+    const rad = (angleDeg * Math.PI) / 180;
+    const x2 = transform.x + mag * Math.cos(rad);
+    const y2 = transform.y - mag * Math.sin(rad);
+
+    // Arrowhead
+    const headLen = 12;
+    const headAngle = Math.PI / 6;
+    const ax1 = x2 - headLen * Math.cos(rad - headAngle);
+    const ay1 = y2 + headLen * Math.sin(rad - headAngle);
+    const ax2 = x2 - headLen * Math.cos(rad + headAngle);
+    const ay2 = y2 + headLen * Math.sin(rad + headAngle);
+
+    // Label position: just past the arrowhead
+    const labelOffset = 16;
+    const lx = x2 + labelOffset * Math.cos(rad);
+    const ly = y2 - labelOffset * Math.sin(rad);
+
+    return (
+      <g>
+        <line
+          x1={transform.x}
+          y1={transform.y}
+          x2={x2}
+          y2={y2}
+          stroke={color}
+          strokeWidth={thickness}
+          strokeDasharray={dashed ? "6,4" : undefined}
+          strokeLinecap="round"
+        />
+        <polygon
+          points={`${x2},${y2} ${ax1},${ay1} ${ax2},${ay2}`}
+          fill={color}
+          stroke={color}
+          strokeWidth={thickness}
+          strokeLinejoin="round"
+        />
+        <text
+          x={lx}
+          y={ly}
+          textAnchor={Math.abs(Math.cos(rad)) > 0.3 ? (Math.cos(rad) > 0 ? "start" : "end") : "middle"}
+          dominantBaseline={Math.abs(Math.sin(rad)) > 0.3 ? (Math.sin(rad) > 0 ? "auto" : "hanging") : "middle"}
+          fontSize={14}
+          fill={color}
+          fontFamily="serif"
+          fontStyle="italic"
+          fontWeight="bold"
+        >
+          {label}
+        </text>
+      </g>
+    );
+  },
+};
+
+const axes: PrimitiveDefinition = {
+  type: "axes",
+  category: "geometry",
+  label: "Coordinate axes",
+  description: "X/Y axes with optional labels.",
+  anchors: ["center"],
+  params: [
+    { name: "size", type: "number", default: 160, min: 20, max: 600, unit: "px" },
+    { name: "showLabels", type: "boolean", default: true },
+  ],
+  render: ({ transform, params }) => {
+    const size = (params.size as number) ?? 160;
+    const showLabels = (params.showLabels as boolean) ?? true;
+    return (
+      <g>
+        <line x1={transform.x - size / 2} y1={transform.y} x2={transform.x + size / 2} y2={transform.y} stroke="#333" strokeWidth={1} markerEnd="url(#arrow)" />
+        <line x1={transform.x} y1={transform.y + size / 2} x2={transform.x} y2={transform.y - size / 2} stroke="#333" strokeWidth={1} markerEnd="url(#arrow)" />
+        {showLabels && (
+          <>
+            <text x={transform.x + size / 2 + 6} y={transform.y + 4} fontSize={12} fontStyle="italic" fill="#333">x</text>
+            <text x={transform.x - 4} y={transform.y - size / 2 - 4} fontSize={12} fontStyle="italic" fill="#333">y</text>
+          </>
+        )}
+      </g>
+    );
+  },
+};
+
+const angleMarker: PrimitiveDefinition = {
+  type: "angle_marker",
+  category: "annotation",
+  label: "Angle marker",
+  description: "An arc with a label between two directions.",
+  anchors: ["center"],
+  params: [
+    { name: "vertexX", type: "number", default: 0 },
+    { name: "vertexY", type: "number", default: 0 },
+    { name: "fromAngleDeg", type: "number", default: 0, unit: "°" },
+    { name: "toAngleDeg", type: "number", default: 30, unit: "°" },
+    { name: "radius", type: "number", default: 30, min: 8, max: 100, unit: "px" },
+    { name: "label", type: "string", default: "θ" },
+    { name: "color", type: "color", default: "#1f6feb" },
+  ],
+  render: ({ transform, params }) => {
+    const r = (params.radius as number) ?? 30;
+    const fromRad = ((params.fromAngleDeg as number) ?? 0) * Math.PI / 180;
+    const toRad = ((params.toAngleDeg as number) ?? 30) * Math.PI / 180;
+    const color = (params.color as string) ?? "#1f6feb";
+    const label = (params.label as string) ?? "θ";
+    const x1 = transform.x + r * Math.cos(fromRad);
+    const y1 = transform.y - r * Math.sin(fromRad);
+    const x2 = transform.x + r * Math.cos(toRad);
+    const y2 = transform.y - r * Math.sin(toRad);
+    const largeArc = Math.abs((toRad - fromRad)) > Math.PI ? 1 : 0;
+    return (
+      <g>
+        <path
+          d={`M ${x1} ${y1} A ${r} ${r} 0 ${largeArc} 0 ${x2} ${y2}`}
+          fill="none"
+          stroke={color}
+          strokeWidth={1.5}
+        />
+        <text
+          x={transform.x + (r + 12) * Math.cos((fromRad + toRad) / 2)}
+          y={transform.y - (r + 12) * Math.sin((fromRad + toRad) / 2)}
+          fontSize={14}
+          fill={color}
+          fontStyle="italic"
+          textAnchor="middle"
+        >
+          {label}
+        </text>
+      </g>
+    );
+  },
+};
+
+const textLabel: PrimitiveDefinition = {
+  type: "text_label",
+  category: "annotation",
+  label: "Text label",
+  description: "Plain text. For LaTeX math use the Math label instead.",
+  anchors: ["center"],
+  params: [
+    { name: "text", type: "string", default: "label" },
+    { name: "fontSize", type: "number", default: 14, min: 8, max: 48 },
+    { name: "color", type: "color", default: "#222" },
+  ],
+  render: ({ transform, params }) => {
+    const text = (params.text as string) ?? "label";
+    const fs = (params.fontSize as number) ?? 14;
+    const color = (params.color as string) ?? "#222";
+    return (
+      <text x={transform.x} y={transform.y} fontSize={fs} fill={color} fontFamily="serif" textAnchor="middle">
+        {text}
+      </text>
+    );
+  },
+};
+
+export function registerAllPrimitives(): void {
+  registerPrimitive(pivot);
+  registerPrimitive(bob);
+  registerPrimitive(rope);
+  registerPrimitive(incline);
+  registerPrimitive(block);
+  registerPrimitive(ground);
+  registerPrimitive(vector);
+  registerPrimitive(axes);
+  registerPrimitive(angleMarker);
+  registerPrimitive(textLabel);
+}
