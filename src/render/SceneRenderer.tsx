@@ -46,9 +46,16 @@ interface SceneRendererProps {
   /** Apply a snap target on mouseup. Creates the relation and finalizes
    *  the drag. Re-runs inference so the smart decorations activate. */
   onApplySnap: (candidate: SnapCandidate) => void;
-  /** The selected object's free-body diagram, with user overrides applied.
-   *  If null, no FBD is shown. */
-  fbdGroup: import("../core/forces").ForceGroup | null;
+  /** The free-body diagrams for the scene. The renderer overlays these
+   *  on top of the regular objects. The list is built in App.tsx from
+   *  the per-object FBD state and the global FBD force toggles. */
+  fbdGroups: import("../core/forces").ForceGroup[];
+  /** Viewport for zoom/pan. Applied as a transform on the inner <g>. */
+  viewport: { x: number; y: number; zoom: number };
+  onSetViewport: (vp: Partial<{ x: number; y: number; zoom: number }>) => void;
+  onResetViewport: () => void;
+  /** Spawn a primitive at the given world position. Used by drag-to-spawn. */
+  onSpawn: (type: string, position: { x: number; y: number }) => void;
 }
 
 export function SceneRenderer({
@@ -63,7 +70,11 @@ export function SceneRenderer({
   onNudge,
   onCommitDrag,
   onApplySnap,
-  fbdGroup,
+  fbdGroups,
+  viewport,
+  onSetViewport,
+  onResetViewport,
+  onSpawn,
 }: SceneRendererProps) {
   // Sort by zIndex then by insertion order
   const sorted = useMemo(
@@ -124,6 +135,81 @@ export function SceneRenderer({
       height="100%"
       viewBox={`0 0 ${scene.canvas.width} ${scene.canvas.height}`}
       style={{ background: scene.canvas.background, cursor: "default", userSelect: "none" }}
+      onWheel={(e) => {
+        // Zoom: plain wheel (no modifier). Shift+wheel = horizontal pan,
+        // plain wheel = zoom. We avoid Ctrl+wheel because Chrome
+        // intercepts it as "browser zoom" and resizes the whole page
+        // rather than letting our handler run.
+        e.preventDefault();
+        const svg = e.currentTarget;
+        const ctm = svg.getScreenCTM();
+        if (!ctm) return;
+        const pt = svg.createSVGPoint();
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        const worldPt = pt.matrixTransform(ctm.inverse());
+        if (e.shiftKey) {
+          // Shift+wheel: horizontal pan (right = +x).
+          const dx = e.deltaY || e.deltaX;
+          onSetViewport({ x: viewport.x - dx * 0.5, y: viewport.y });
+        } else {
+          // Plain wheel: zoom (1.1 per notch).
+          const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+          const oldZoom = viewport.zoom;
+          const newZoom = Math.max(0.1, Math.min(8, oldZoom * factor));
+          // Adjust pan so the cursor stays anchored in world space.
+          const newX = worldPt.x - (worldPt.x - viewport.x) * (newZoom / oldZoom);
+          const newY = worldPt.y - (worldPt.y - viewport.y) * (newZoom / oldZoom);
+          onSetViewport({ x: newX, y: newY, zoom: newZoom });
+        }
+      }}
+      onMouseDown={(e) => {
+        // Pan: middle-mouse or space+left-click.
+        if (e.button === 1 || (e.button === 0 && e.altKey)) {
+          e.preventDefault();
+          const startX = e.clientX;
+          const startY = e.clientY;
+          const startVpX = viewport.x;
+          const startVpY = viewport.y;
+          // Convert screen delta to world delta.
+          const ctm = (e.currentTarget as SVGSVGElement).getScreenCTM();
+          const scale = ctm ? ctm.a : 1; // x-scale (inverse of zoom)
+          const onMove = (ev: MouseEvent) => {
+            const dxScreen = ev.clientX - startX;
+            const dyScreen = ev.clientY - startY;
+            onSetViewport({
+              x: startVpX - dxScreen / scale,
+              y: startVpY - dyScreen / scale,
+            });
+          };
+          const onUp = () => {
+            window.removeEventListener("mousemove", onMove);
+            window.removeEventListener("mouseup", onUp);
+          };
+          window.addEventListener("mousemove", onMove);
+          window.addEventListener("mouseup", onUp);
+        }
+      }}
+      onDragOver={(e) => {
+        // Allow drop from library.
+        if (e.dataTransfer.types.includes("application/x-figurate-type")) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDrop={(e) => {
+        const type = e.dataTransfer.getData("application/x-figurate-type");
+        if (!type) return;
+        e.preventDefault();
+        const svg = e.currentTarget;
+        const ctm = svg.getScreenCTM();
+        if (!ctm) return;
+        const pt = svg.createSVGPoint();
+        pt.x = e.clientX;
+        pt.y = e.clientY;
+        const worldPt = pt.matrixTransform(ctm.inverse());
+        onSpawn(type, { x: worldPt.x, y: worldPt.y });
+      }}
     >
       <defs>
         <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
@@ -138,6 +224,8 @@ export function SceneRenderer({
           <path d={`M ${scene.canvas.grid?.spacing ?? 20} 0 L 0 0 0 ${scene.canvas.grid?.spacing ?? 20}`} fill="none" stroke={scene.canvas.grid?.color ?? "#e8e8e8"} strokeWidth={0.5} />
         </pattern>
       </defs>
+      {/* Grid stays fixed in screen space so the user always has a
+          visual reference for the canvas size, regardless of zoom/pan. */}
       <rect
         width={scene.canvas.width}
         height={scene.canvas.height}
@@ -145,7 +233,11 @@ export function SceneRenderer({
         pointerEvents="all"
         onMouseDown={onCanvasMouseDown}
       />
-      {visibleObjects.map((obj) => (
+      {/* Everything in this <g> is transformed by the viewport. The
+          world coordinates of every object are interpreted in the
+          post-transform space. */}
+      <g transform={`translate(${viewport.x},${viewport.y}) scale(${viewport.zoom})`}>
+        {visibleObjects.map((obj) => (
         <RenderObject
           key={obj.id}
           obj={obj}
@@ -177,8 +269,44 @@ export function SceneRenderer({
       )}
       {/* FBD overlay — renders on top of objects but below the selection
           circles. Each force is an arrow with a label. The user toggles
-          which forces to show in the Inspector. */}
-      <FBDRenderer group={fbdGroup} />
+          which forces to show in the Inspector or via the global force
+          toggles in the toolbar. */}
+        <FBDRenderer groups={fbdGroups} />
+      </g>
+      {/* Viewport HUD — fixed in screen space, shows zoom + reset button.
+          Stays readable regardless of pan/zoom. */}
+      <g style={{ pointerEvents: "all" }}>
+        <rect
+          x={scene.canvas.width - 130}
+          y={scene.canvas.height - 36}
+          width={120}
+          height={26}
+          rx={4}
+          fill="var(--panel)"
+          stroke="var(--panel-border)"
+          strokeWidth={1}
+        />
+        <text
+          x={scene.canvas.width - 120}
+          y={scene.canvas.height - 19}
+          fontSize={11}
+          fill="var(--text-dim)"
+          fontFamily="monospace"
+        >
+          {(viewport.zoom * 100).toFixed(0)}%
+        </text>
+        <text
+          x={scene.canvas.width - 24}
+          y={scene.canvas.height - 19}
+          fontSize={11}
+          fill="var(--text)"
+          fontFamily="monospace"
+          style={{ cursor: "pointer" }}
+          onClick={onResetViewport}
+        >
+          reset
+        </text>
+      </g>
     </svg>
   );
 }

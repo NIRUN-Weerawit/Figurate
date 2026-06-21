@@ -161,17 +161,24 @@ export function Inspector() {
         {def.params.length > 0 && (
           <section>
             <h4>Parameters</h4>
-            {def.params.map((p) => (
-              <ParamInput
-                key={p.name}
-                param={p}
-                value={obj.params[p.name] as number | string | boolean}
-                onChange={(v) => {
-                  updateParams(obj.id, { [p.name]: v });
-                  solve();
-                }}
-              />
-            ))}
+            {def.params.map((p) => {
+              // Special: rope `from` and `to` are scene object ids. Show
+              // a combobox with all current object ids as suggestions.
+              const isObjectRef =
+                obj.type === "rope" && (p.name === "from" || p.name === "to");
+              return (
+                <ParamInput
+                  key={p.name}
+                  param={p}
+                  value={obj.params[p.name] as number | string | boolean}
+                  onChange={(v) => {
+                    updateParams(obj.id, { [p.name]: v });
+                    solve();
+                  }}
+                  comboboxOptions={isObjectRef ? scene.objects.map((o) => o.id) : undefined}
+                />
+              );
+            })}
           </section>
         )}
 
@@ -233,8 +240,10 @@ function FbdSection({
 }) {
   const scene = useSceneStore((s) => s.scene);
   // Re-compute the FBD every time the scene changes. The user's overrides
-  // are applied separately via `applyFbdOverrides`.
-  const group = computeForces(obj, scene);
+  // are applied via `applyFbdOverrides` so the toggle checkboxes
+  // reflect the actual current state (not just the default `enabled`).
+  const baseGroup = computeForces(obj, scene);
+  const group = applyFbdOverrides(baseGroup, fbdEnabled);
   const visible = fbdEnabled ? fbdEnabled["_visible"] !== false : false;
   // Count present forces (the system thinks these are real)
   const present = group.forces.filter((f) => f.present);
@@ -322,10 +331,15 @@ function ParamInput({
   param,
   value,
   onChange,
+  comboboxOptions,
 }: {
   param: { name: string; type: string; min?: number; max?: number; step?: number; unit?: string };
   value: number | string | boolean;
   onChange: (v: number | string | boolean) => void;
+  /** When set (and the param is a string), render a combobox with these
+   *  options instead of a plain text input. Used for rope `from`/`to`
+   *  params, which reference scene object ids. */
+  comboboxOptions?: string[];
 }) {
   const label = param.name;
   if (param.type === "number") {
@@ -387,6 +401,17 @@ function ParamInput({
       </div>
     );
   }
+  // Special: combobox for string params with provided options.
+  if (param.type === "string" && comboboxOptions) {
+    return (
+      <ComboboxInput
+        value={value as string}
+        onChange={(v) => onChange(v)}
+        options={comboboxOptions}
+        placeholder={param.name}
+      />
+    );
+  }
   return (
     <div className="param-row">
       <label>{label}</label>
@@ -395,6 +420,44 @@ function ParamInput({
         value={value as string}
         onChange={(e) => onChange(e.target.value)}
       />
+    </div>
+  );
+}
+
+/**
+ * A combobox-style text input with autocomplete suggestions from a list.
+ * Used for rope `from`/`to` params where the user can either pick from
+ * a list of scene objects or type a free-form id.
+ */
+function ComboboxInput({
+  value,
+  onChange,
+  options,
+  placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  placeholder?: string;
+}) {
+  // Generate a unique id for the datalist so multiple comboboxes on the
+  // same page don't collide.
+  const listId = `cb-${Math.random().toString(36).slice(2, 9)}`;
+  return (
+    <div className="param-row combobox-row">
+      <input
+        type="text"
+        list={listId}
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="param-text"
+      />
+      <datalist id={listId}>
+        {options.map((o) => (
+          <option key={o} value={o} />
+        ))}
+      </datalist>
     </div>
   );
 }

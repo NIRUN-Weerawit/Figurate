@@ -5,7 +5,8 @@
 import { useState } from "react";
 import { useSceneStore } from "../core/scene";
 import { SAMPLE_SCENES } from "../samples";
-import { detectAllForces } from "../core/forces";
+import { detectAllForces, FORCE_META } from "../core/forces";
+import clsx from "clsx";
 
 export function Toolbar() {
   const scene = useSceneStore((s) => s.scene);
@@ -104,6 +105,10 @@ export function Toolbar() {
         </button>
       </div>
       <div className="toolbar-right">
+        {/* Global FBD force toggles — show a force on EVERY object that
+            has it, regardless of selection. Independent of the per-object
+            FBD toggles in the Inspector. */}
+        <GlobalForceToggles />
         <select
           value=""
           onChange={(e) => {
@@ -122,5 +127,62 @@ export function Toolbar() {
       </div>
       {toast && <div className="toast">{toast}</div>}
     </header>
+  );
+}
+
+/**
+ * The "global FBD force toggles" dropdown. Each force type has a
+ * checkbox that, when checked, shows that force on every object that
+ * has it — regardless of selection. Independent of the per-object
+ * FBD toggles in the Inspector.
+ *
+ * The user can also press "All on" / "All off" for quick toggling.
+ */
+function GlobalForceToggles() {
+  const fbdGlobalEnabled = useSceneStore((s) => s.fbdGlobalEnabled);
+  const setFbdGlobalEnabled = useSceneStore((s) => s.setFbdGlobalEnabled);
+  const [open, setOpen] = useState(false);
+  const enabledCount = Object.values(fbdGlobalEnabled).filter(Boolean).length;
+  return (
+    <div className="global-forces">
+      <button
+        className={clsx("btn-toggle", { active: enabledCount > 0 })}
+        onClick={() => setOpen((v) => !v)}
+        title="Show a force on every object that has it, regardless of selection"
+      >
+        ⚙ Forces {enabledCount > 0 ? `(${enabledCount})` : ""}
+      </button>
+      {open && (
+        <div className="global-forces-panel">
+          <div className="global-forces-header">
+            <strong>Force visibility</strong>
+            <div className="global-forces-actions">
+              <button onClick={() => {
+                for (const f of Object.keys(FORCE_META)) {
+                  setFbdGlobalEnabled(f, true);
+                }
+              }}>All on</button>
+              <button onClick={() => {
+                for (const f of Object.keys(fbdGlobalEnabled)) {
+                  setFbdGlobalEnabled(f, false);
+                }
+              }}>All off</button>
+            </div>
+          </div>
+          {Object.entries(FORCE_META).map(([type, meta]) => (
+            <label key={type} className="global-forces-row">
+              <input
+                type="checkbox"
+                checked={fbdGlobalEnabled[type] === true}
+                onChange={(e) => setFbdGlobalEnabled(type, e.target.checked)}
+              />
+              <span style={{ color: meta.color, fontWeight: "bold" }}>●</span>
+              <span>{meta.label}</span>
+              <span className="global-forces-cat">{meta.category}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }

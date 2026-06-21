@@ -7,6 +7,7 @@ import { DSLEditor } from "./ui/DSLEditor";
 import { useSceneStore } from "./core/scene";
 import { SAMPLE_SCENES } from "./samples";
 import { computeForces, applyFbdOverrides, detectAllForces } from "./core/forces";
+import type { ForceGroup, Force } from "./core/forces";
 
 export function App() {
   const scene = useSceneStore((s) => s.scene);
@@ -25,21 +26,81 @@ export function App() {
   const redo = useSceneStore((s) => s.redo);
   const removeObject = useSceneStore((s) => s.removeObject);
   const loadScene = useSceneStore((s) => s.loadScene);
+  const addObject = useSceneStore((s) => s.addObject);
+  const setViewport = useSceneStore((s) => s.setViewport);
+  const resetViewport = useSceneStore((s) => s.resetViewport);
+  const viewport = useSceneStore((s) => s.viewport);
   const fbdEnabled = useSceneStore((s) => s.fbdEnabled);
+  const fbdGlobalEnabled = useSceneStore((s) => s.fbdGlobalEnabled);
 
-  // Compute the FBD force group for the currently-selected object, with
-  // the user's per-force overrides applied. Re-runs whenever the scene
-  // (positions, relations) or the FBD overrides change.
+  /**
+   * Compute the FBD overlays for the whole scene. There are two sources
+   * of visibility:
+   *
+   *   1. Per-object: when the user selects an object and toggles its
+   *      FBD on, that object's FBD shows (with per-force sub-toggles).
+   *   2. Global: when a force type is toggled on globally, that force
+   *      is shown on every object that has it, regardless of selection.
+   *
+   * The result is a list of `ForceGroup`s — one per object that has
+   * at least one visible force. The renderer draws them all.
+   */
+  const fbdGroups = useMemo(() => {
+    const result: ForceGroup[] = [];
+    // For each object in the scene, compute its base force group.
+    // Then layer per-object + global overrides to decide which forces
+    // are visible.
+    for (const obj of scene.objects) {
+      const base = computeForces(obj, scene);
+      if (base.forces.length === 0) continue;
+      const perObj = fbdEnabled[obj.id];
+      // If the per-object FBD is off, AND no globally-enabled force
+      // applies to this object, skip.
+      const globallyVisible = base.forces.some(
+        (f) => fbdGlobalEnabled[f.type] === true
+      );
+      // The per-object FBD is "visible" if the master toggle is on AND
+      // at least one of the per-force toggles is true. We don't count
+      // magnitude/direction overrides (those keys start with "_") as
+      // visibility signals.
+      const perObjectVisible = !!perObj && perObj["_visible"] !== false && Object.entries(perObj).some(
+        ([k, v]) => v === true && !k.startsWith("_")
+      );
+      if (!globallyVisible && !perObjectVisible) continue;
+      // Build the merged group: a force is visible if either
+      //   - its per-object override is true, OR
+      //   - its global override is true.
+      // Apply per-object magnitude/direction overrides on top.
+      const merged: ForceGroup = {
+        objectId: obj.id,
+        forces: base.forces.map((f): Force => {
+          const perObjFlag = perObj?.[f.type];
+          const perObjEnabled: boolean =
+            typeof perObjFlag === "boolean" ? perObjFlag : f.enabled;
+          const globalEnabled = fbdGlobalEnabled[f.type] === true;
+          const mag = perObj?.[`_mag_${f.type}`];
+          const dir = perObj?.[`_dir_${f.type}`];
+          return {
+            ...f,
+            enabled: perObjEnabled || globalEnabled,
+            magnitude: typeof mag === "number" ? mag : f.magnitude,
+            directionDeg: typeof dir === "number" ? dir : f.directionDeg,
+          };
+        }),
+      };
+      // Keep only visible forces.
+      merged.forces = merged.forces.filter((f) => f.enabled && f.present);
+      if (merged.forces.length > 0) result.push(merged);
+    }
+    return result;
+  }, [scene, fbdEnabled, fbdGlobalEnabled]);
+
+  // Backwards-compat: `fbdGroup` is the selected object's FBD. The
+  // renderer accepts a list now, but keep this for the Inspector.
   const fbdGroup = useMemo(() => {
     if (!selectedId) return null;
-    const obj = scene.objects.find((o) => o.id === selectedId);
-    if (!obj) return null;
-    const overrides = fbdEnabled[selectedId];
-    // Master toggle: if _visible isn't true, skip.
-    if (overrides && overrides["_visible"] === false) return null;
-    const group = computeForces(obj, scene);
-    return applyFbdOverrides(group, overrides);
-  }, [selectedId, scene, fbdEnabled]);
+    return fbdGroups.find((g) => g.objectId === selectedId) ?? null;
+  }, [fbdGroups, selectedId]);
 
   // load a sample scene on first mount so the canvas isn't blank
   useEffect(() => {
@@ -149,7 +210,11 @@ export function App() {
               applySnap(candidate);
               commit("snap");
             }}
-            fbdGroup={fbdGroup}
+            fbdGroups={fbdGroups}
+            viewport={viewport}
+            onSetViewport={setViewport}
+            onResetViewport={resetViewport}
+            onSpawn={(type, position) => addObject(type, position)}
           />
           <div className="canvas-hint">
             Click to select · Shift+click to add · drag on empty canvas to marquee-select · drag to move · Alt+drag for constraint-aware.

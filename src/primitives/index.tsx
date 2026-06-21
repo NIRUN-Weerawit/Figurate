@@ -404,9 +404,12 @@ const angleMarker: PrimitiveDefinition = {
   ],
   render: ({ transform, params, derived }) => {
     const r = (params.radius as number) ?? 30;
-    // toAngleDeg is derived from the bob's angleDeg (when this is a θ-arc
-    // on a pendulum composite). Falls back to the user-editable value.
-    const fromAngleDeg = (params.fromAngleDeg as number) ?? 0;
+    // Prefer derived values (the derivation engine can override these
+    // when this arc belongs to a composite — e.g. an incline composite
+    // pins the arc's vertex to the lower-left corner of the incline).
+    // Falls back to the user-editable params otherwise.
+    const fromAngleDeg = (derived?.["params.fromAngleDeg"] as number | undefined)
+      ?? (params.fromAngleDeg as number) ?? 0;
     const toAngleDeg = (derived?.["params.toAngleDeg"] as number | undefined)
       ?? (params.toAngleDeg as number) ?? 30;
     // Vertex: prefer derived (mirrors pivot position), then params, then
@@ -417,13 +420,21 @@ const angleMarker: PrimitiveDefinition = {
       ?? (params.vertexY as number) ?? transform.y;
     const color = (params.color as string) ?? "#1f6feb";
     const label = (params.label as string) ?? "θ";
+    // SCREEN convention: 0° = straight down, 90° = right, 180° = up,
+    // 270° = left. This matches the convention used by the rope
+    // (`pendulum_from`) and the incline (`angleDeg`).
+    // For screen convention: end.x = vx + r*sin(rad), end.y = vy + r*cos(rad).
     const fromRad = (fromAngleDeg * Math.PI) / 180;
     const toRad = (toAngleDeg * Math.PI) / 180;
-    const x1 = vx + r * Math.cos(fromRad);
-    const y1 = vy - r * Math.sin(fromRad);
-    const x2 = vx + r * Math.cos(toRad);
-    const y2 = vy - r * Math.sin(toRad);
+    const x1 = vx + r * Math.sin(fromRad);
+    const y1 = vy + r * Math.cos(fromRad);
+    const x2 = vx + r * Math.sin(toRad);
+    const y2 = vy + r * Math.cos(toRad);
     const largeArc = Math.abs((toRad - fromRad)) > Math.PI ? 1 : 0;
+    // The label is placed at the midpoint of the arc, slightly outside.
+    const midRad = (fromRad + toRad) / 2;
+    const lx = vx + (r + 12) * Math.sin(midRad);
+    const ly = vy + (r + 12) * Math.cos(midRad);
     return (
       <g>
         <path
@@ -433,12 +444,14 @@ const angleMarker: PrimitiveDefinition = {
           strokeWidth={1.5}
         />
         <text
-          x={vx + (r + 12) * Math.cos((fromRad + toRad) / 2)}
-          y={vy - (r + 12) * Math.sin((fromRad + toRad) / 2)}
-          fontSize={14}
-          fill={color}
-          fontStyle="italic"
+          x={lx}
+          y={ly}
           textAnchor="middle"
+          fontSize={13}
+          fontFamily="serif"
+          fontStyle="italic"
+          fontWeight="bold"
+          fill={color}
         >
           {label}
         </text>

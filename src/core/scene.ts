@@ -8,7 +8,51 @@
 
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { nanoid } from "nanoid";
+
+/**
+ * Generate a simple, human-readable id for a new object of the given type.
+ * Format: `<type_prefix><N>` where N is the next available counter for
+ * that type. Examples: `bob1`, `pivot2`, `block1`, `theta_arc1`.
+ *
+ * The counter is per-type and persisted in the scene's `idCounters` map.
+ * Counters are NOT serialized to disk; they're recomputed on load by
+ * scanning existing objects, so deleting an object doesn't shift other
+ * objects' numbers.
+ *
+ * If the desired id is already taken, N is incremented until a free
+ * one is found (defensive — shouldn't happen in normal flow).
+ */
+function nextSimpleId(
+  state: { idCounters: Record<string, number>; scene: { objects: { id: string }[] } },
+  type: string
+): string {
+  // If the counter hasn't been initialized for this type, scan existing
+  // objects to find the max N. This handles scenes loaded from disk
+  // (where the counter doesn't exist) and scenes where the user deleted
+  // the most recent object (so the counter from a previous session
+  // would be too low).
+  if (state.idCounters[type] === undefined) {
+    let maxN = 0;
+    const prefix = type;
+    for (const o of state.scene.objects) {
+      if (!o.id.startsWith(prefix)) continue;
+      const tail = o.id.slice(prefix.length);
+      const n = parseInt(tail, 10);
+      if (!Number.isNaN(n) && n > maxN) maxN = n;
+    }
+    state.idCounters[type] = maxN;
+  }
+  state.idCounters[type] += 1;
+  let candidate = `${type}${state.idCounters[type]}`;
+  // Defensive: if the id is taken (e.g. user manually renamed), increment
+  // until a free one is found.
+  const taken = new Set(state.scene.objects.map((o) => o.id));
+  while (taken.has(candidate)) {
+    state.idCounters[type] += 1;
+    candidate = `${type}${state.idCounters[type]}`;
+  }
+  return candidate;
+}
 import type { FigurateScene, SceneObject } from "./dsl";
 import { defaultParams, defaultTransform, getPrimitive } from "./registry";
 import { inferRoles } from "./inference";
@@ -74,6 +118,13 @@ interface SceneState {
   setFbdForceMagnitude: (objectId: string, forceType: string, magnitude: number) => void;
   /** Update the direction (degrees) of a force in the FBD. */
   setFbdForceDirection: (objectId: string, forceType: string, directionDeg: number) => void;
+  // ── Global FBD force visibility (per force type, applies to all objects) ──
+  /** Map of `forceType → enabled`. When a force type is enabled here, it
+   *  is shown on every object that has that force, regardless of selection.
+   *  Stored alongside the per-object FBD state but at the top level. */
+  fbdGlobalEnabled: Record<string, boolean>;
+  /** Toggle a force type globally. */
+  setFbdGlobalEnabled: (forceType: string, enabled: boolean) => void;
   /** Move an object's transform by a delta in world coords (used for group drag). */
   nudge: (ids: string[], dx: number, dy: number) => void;
 
@@ -83,6 +134,13 @@ interface SceneState {
   toggleSelect: (id: string) => void;
   /** Replace the selection set entirely. */
   setSelection: (ids: string[]) => void;
+  /** Per-type id counters used by `addObject` to produce bob1, bob2, etc.
+   *  Not serialized; rebuilt on load by scanning existing objects. */
+  idCounters: Record<string, number>;
+  // ── Viewport (zoom / pan) ──
+  viewport: { x: number; y: number; zoom: number };
+  setViewport: (vp: Partial<{ x: number; y: number; zoom: number }>) => void;
+  resetViewport: () => void;
   /** Add all ids whose (x,y) falls inside the rect (in world coords). */
   selectInRect: (rect: { x: number; y: number; w: number; h: number }) => void;
 
@@ -130,6 +188,11 @@ export const useSceneStore = create<SceneState>()(
       selectedIds: [],
       past: [],
       future: [],
+      // Per-type id counters, used by `nextSimpleId` to generate bob1,
+      // bob2, etc. Not serialized; rebuilt on load.
+      idCounters: {},
+      // Viewport: pan offset (x, y) and zoom level. Default identity.
+      viewport: { x: 0, y: 0, zoom: 1.0 },
 
       addObject: (type, position) => {
         const def = getPrimitive(type);
@@ -141,17 +204,18 @@ export const useSceneStore = create<SceneState>()(
         const spawnPos = position ?? { x: cx, y: cy };
         // Composite: insert the full group, return the anchor id.
         if (def?.composite) {
-          const groupId = nanoid(8);
           const built = def.composite.build(spawnPos);
           // Build the placeholder → real-id map for the composite.
+          // The first object (anchor) gets the anchor's simple id; the
+          // rest are also simple: bob1, rope1, theta_arc1, etc.
           const roleToId = new Map<string, string>();
           const builtIds: string[] = [];
           const allObjects: SceneObject[] = [];
           for (let i = 0; i < built.length; i++) {
             const b = built[i];
             const realId = i === 0
-              ? `${def.composite.anchorType}_${nanoid(6)}`
-              : `${b.type}_${nanoid(6)}`;
+              ? nextSimpleId(get(), def.composite.anchorType)
+              : nextSimpleId(get(), b.type);
             builtIds.push(realId);
             roleToId.set(b.compositeRole, realId);
           }
@@ -191,7 +255,10 @@ export const useSceneStore = create<SceneState>()(
                 relations: resolveInRelations(b.relations),
                 zIndex: draft.scene.objects.length,
                 visible: true,
-                compositeOf: groupId,
+                // Group composite members by sharing the anchor's id.
+                // This keeps the group tied to a real, human-readable
+                // object id rather than an opaque nanoid.
+                compositeOf: builtIds[0],
                 compositeRole: b.compositeRole,
               } as SceneObject);
             }
@@ -202,8 +269,8 @@ export const useSceneStore = create<SceneState>()(
           get().solve();
           return builtIds[0];
         }
-        // Plain primitive.
-        const id = `${type}_${nanoid(6)}`;
+        // Plain primitive. Use a simple sequential id like bob1, bob2.
+        const id = nextSimpleId(get(), type);
         pushHistory(`add ${type}`);
         set((draft) => {
           draft.scene.objects.push({
@@ -418,6 +485,7 @@ export const useSceneStore = create<SceneState>()(
 
       // ── FBD state (not stored in scene; lives in the store only) ──
       fbdEnabled: {},
+      fbdGlobalEnabled: {},
 
       setFbdVisible: (objectId, visible) => {
         set((draft) => {
@@ -450,6 +518,12 @@ export const useSceneStore = create<SceneState>()(
         });
       },
 
+      setFbdGlobalEnabled: (forceType, enabled) => {
+        set((draft) => {
+          draft.fbdGlobalEnabled[forceType] = enabled;
+        });
+      },
+
       nudge: (ids, dx, dy) => {
         set((draft) => {
           for (const id of ids) {
@@ -476,6 +550,23 @@ export const useSceneStore = create<SceneState>()(
           }
           draft.selectedIds = hits;
           draft.selectedId = hits[0] ?? null;
+        });
+      },
+
+      setViewport: (vp) => {
+        set((draft) => {
+          if (vp.x !== undefined) draft.viewport.x = vp.x;
+          if (vp.y !== undefined) draft.viewport.y = vp.y;
+          if (vp.zoom !== undefined) {
+            // Clamp zoom to a reasonable range
+            draft.viewport.zoom = Math.max(0.1, Math.min(8, vp.zoom));
+          }
+        });
+      },
+
+      resetViewport: () => {
+        set((draft) => {
+          draft.viewport = { x: 0, y: 0, zoom: 1.0 };
         });
       },
 

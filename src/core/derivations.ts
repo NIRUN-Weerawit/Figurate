@@ -81,9 +81,52 @@ function derivationsForObject(obj: SceneObject, scene: FigurateScene): Derivatio
       constant(`weight-${obj.id}-down`, { object: obj.id, field: "params.angleDeg" }, 270)
     );
   } else if (role === "theta" || obj.type === "angle_marker") {
-    // θ-arc: toAngleDeg mirrors the bob's angleDeg. We find the bob via
-    // the composite's siblings: the same `compositeOf` group should have
-    // a `pendulum_bob` object.
+    // Two cases: a pendulum θ-arc (between vertical and rope) or an
+    // incline θ-arc (between horizontal and the surface).
+    const inclineId = findCompositeIncline(scene, obj.compositeOf);
+    if (inclineId) {
+      // Incline θ-arc. The vertex is the lower-left corner of the
+      // incline. The arc goes from "horizontal-right" (90° in screen
+      // convention) to "the surface direction" (90° - incline.angleDeg
+      // in screen convention, since positive incline angle tilts the
+      // surface UP to the right).
+      const incline = scene.objects.find((o) => o.id === inclineId);
+      if (incline) {
+        // The incline's "left end" (lower-left) is at:
+        //   x = transform.x - (length/2) * cos(angleDeg)
+        //   y = transform.y + (length/2) * sin(angleDeg)
+        // (the slope goes from left to right; transform is the center).
+        const L = (incline.params.length as number) ?? 200;
+        const aDeg = (incline.params.angleDeg as number) ?? 0;
+        const aRad = (aDeg * Math.PI) / 180;
+        const lx = incline.transform.x - (L / 2) * Math.cos(aRad);
+        const ly = incline.transform.y + (L / 2) * Math.sin(aRad);
+        // Pin the vertex to the incline's lower-left corner.
+        out.push(
+          constant(`theta-incline-${obj.id}-vx`, { object: obj.id, field: "params.vertexX" }, lx)
+        );
+        out.push(
+          constant(`theta-incline-${obj.id}-vy`, { object: obj.id, field: "params.vertexY" }, ly)
+        );
+        // fromAngleDeg = 90° (horizontal-right in screen convention).
+        out.push(
+          constant(`theta-incline-${obj.id}-from`, { object: obj.id, field: "params.fromAngleDeg" }, 90)
+        );
+        // toAngleDeg = 90° - incline.angleDeg. The arc goes from
+        // horizontal to the slope, opening UPWARD into the wedge.
+        out.push(
+          constant(
+            `theta-incline-${obj.id}-to`,
+            { object: obj.id, field: "params.toAngleDeg" },
+            90 - aDeg
+          )
+        );
+      }
+      return out;
+    }
+    // Pendulum θ-arc: toAngleDeg mirrors the bob's angleDeg. We find
+    // the bob via the composite's siblings: the same `compositeOf`
+    // group should have a `pendulum_bob` object.
     const bobId = findCompositeBob(scene, obj.compositeOf);
     if (bobId) {
       out.push(
@@ -216,6 +259,14 @@ function findCompositeBob(scene: FigurateScene, groupId: string | undefined): st
   if (!groupId) return undefined;
   return scene.objects.find(
     (o) => o.compositeOf === groupId && o.type === "pendulum_bob"
+  )?.id;
+}
+
+/** Find the incline in a composite group. */
+function findCompositeIncline(scene: FigurateScene, groupId: string | undefined): string | undefined {
+  if (!groupId) return undefined;
+  return scene.objects.find(
+    (o) => o.compositeOf === groupId && o.type === "incline"
   )?.id;
 }
 

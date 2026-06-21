@@ -451,6 +451,95 @@ main.canvas {
   pointer-events: none;
 }
 
+/* Combobox for rope `from`/`to` and other object-id params */
+.combobox-row {
+  /* Reuse param-row layout but allow the input to grow */
+}
+.combobox-row input[list] {
+  flex: 1;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
+  padding: 3px 5px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: monospace;
+}
+
+/* Global FBD force toggles (toolbar) */
+.global-forces {
+  position: relative;
+  display: inline-block;
+}
+.global-forces .btn-toggle {
+  background: var(--panel-light);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.global-forces .btn-toggle.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.global-forces-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 8px;
+  z-index: 100;
+  min-width: 280px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  max-height: 400px;
+  overflow-y: auto;
+}
+.global-forces-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--panel-border);
+  margin-bottom: 6px;
+}
+.global-forces-header strong {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.global-forces-actions button {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.global-forces-actions button:hover {
+  color: var(--accent);
+}
+.global-forces-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.global-forces-row .global-forces-cat {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 /* DSL editor */
 .dsl-editor {
   flex-shrink: 0;

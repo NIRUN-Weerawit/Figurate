@@ -90,6 +90,35 @@ export interface ForceGroup {
 }
 
 /**
+ * Heuristic: is this object a free body (i.e. is it subject to forces
+ * and can we draw a meaningful FBD)?
+ *
+ * Returns `false` for objects that are conceptually "fixed to the
+ * world" — a ceiling-mounted pivot, the ground, axes, text labels,
+ * the angle marker itself, etc. Those don't have a meaningful FBD
+ * because they aren't accelerating under net force.
+ *
+ * Returns `true` for objects that are subject to forces — bobs, blocks,
+ * masses, particles, etc.
+ */
+function isFreeBody(obj: SceneObject, _scene: FigurateScene): boolean {
+  // Fixed-to-world primitives: never free bodies.
+  if (obj.type === "ground") return false;
+  if (obj.type === "axes") return false;
+  if (obj.type === "text_label") return false;
+  if (obj.type === "angle_marker") return false;
+  if (obj.type === "incline") return false; // the slope is fixed
+  // Pivots are fixed mounts unless they have explicit mass params
+  // (e.g. a pulley with rotational inertia). Default to "fixed".
+  if (obj.type === "pendulum_pivot") return false;
+  // Ropes are massless (in textbook physics 1) and don't have FBDs.
+  if (obj.type === "rope") return false;
+  // Bobs, blocks, vectors (when anchored to a free body), and any
+  // user-added mass are free bodies.
+  return true;
+}
+
+/**
  * Compute the FBD force group for a single object.
  *
  * Walks the object's relations, type, and properties to determine which
@@ -97,8 +126,39 @@ export interface ForceGroup {
  * with computed directions, magnitudes, formulas, and labels. All
  * forces default to `enabled: true` and `present: true`; the user can
  * toggle them off in the Inspector.
+ *
+ * Some objects are NOT free bodies — they are fixed to the world
+ * (a pivot attached to a ceiling, the ground, etc.). For those, the
+ * FBD makes no sense, so we return an empty force list. The user can
+ * still see their info in the Inspector, just no forces.
+ *
+ * If the object already has a vector primitive anchored to it with
+ * the same role (e.g. a manual `tension` vector on a bob), the
+ * matching FBD force is marked `present: false` so the renderer
+ * skips it — this avoids drawing the same force twice (once as a
+ * scene vector, once as FBD).
  */
 export function computeForces(obj: SceneObject, scene: FigurateScene): ForceGroup {
+  if (!isFreeBody(obj, scene)) {
+    return { objectId: obj.id, forces: [] };
+  }
+  // Build a set of role names already drawn as scene vectors anchored
+  // to this object. E.g. if there's a `tension` vector primitive
+  // attached via `origin_at`, we mark the FBD "tension" force as
+  // present=false so it isn't drawn twice.
+  const existingRoles = new Set<string>();
+  for (const v of scene.objects) {
+    if (v.type !== "vector") continue;
+    if (!v.visible) continue;
+    const isAnchored = (v.relations ?? []).some(
+      (r) => "target" in r && r.target === obj.id && r.kind === "origin_at"
+    );
+    if (!isAnchored) continue;
+    // Map the vector's role to a force type. A vector with role
+    // "tension" maps to FBD "tension", etc.
+    const role = v.compositeRole;
+    if (role) existingRoles.add(role);
+  }
   const forces: Force[] = [];
 
   // 1. Gravity — always (if object has mass)
@@ -145,6 +205,26 @@ export function computeForces(obj: SceneObject, scene: FigurateScene): ForceGrou
   // 12. Orbital gravity — if object is a satellite.
   const orbital = computeOrbitalGravity(obj, scene);
   if (orbital) forces.push(orbital);
+
+  // If the user has a scene vector already playing this role, mark the
+  // matching FBD force as `present: false` so the renderer skips it.
+  // The mapping is by force.type <-> compositeRole.
+  const ROLE_TO_FORCE: Record<string, string> = {
+    tension: "tension",
+    weight: "weight",
+    normal: "normal",
+    friction: "friction_kinetic",
+    gravity: "gravity",
+  };
+  for (const f of forces) {
+    // Find a scene role that maps to this force.
+    for (const [role, forceType] of Object.entries(ROLE_TO_FORCE)) {
+      if (forceType === f.type && existingRoles.has(role)) {
+        f.present = false;
+        break;
+      }
+    }
+  }
 
   return { objectId: obj.id, forces };
 }

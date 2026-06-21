@@ -9,12 +9,15 @@ export const PENDULUM_30DEG: FigurateScene = {
   version: "0.1.0",
   meta: { title: "Pendulum at 30°", subject: "physics:mechanics" },
   canvas: { width: 900, height: 600, background: "#fafafa", grid: { enabled: true, spacing: 20, color: "#e8e8e8" } },
-  // Note: every object below carries `compositeOf: "pendulum_g1"` and a
-  // `compositeRole`. The derivation layer in `core/derivations.ts` reads
-  // those fields to wire the T vector to the bob→pivot direction, the θ-arc
-  // to bob.params.angleDeg, and so on. Without these tags, the figures
-  // still render — but the derivations don't activate, and you'll have to
-  // edit each force vector's angleDeg manually.
+  // Minimal pendulum: 4 objects, no manual composite tags, no baked-in
+  // angleDegs. The inference engine (core/inference.ts) reads the rope's
+  // from/to to identify the pivot and bob, then assigns composite roles
+  // automatically. The derivation layer (core/derivations.ts) then
+  // re-aims the T vector at the pivot and the mg vector straight down.
+  //
+  // To tweak: edit bob1's `params.angleDeg` to swing the bob, edit
+  // the vectors' `params.magnitude`/`params.angleDeg` to change the
+  // forces. Composite roles and re-aim happen automatically.
   objects: [
     {
       id: "pivot1",
@@ -22,18 +25,18 @@ export const PENDULUM_30DEG: FigurateScene = {
       params: { barWidth: 80, hatchSpacing: 8 },
       transform: { x: 450, y: 100 },
       zIndex: 0,
-      compositeOf: "pendulum_g1",
-      compositeRole: "pivot",
     },
     {
       id: "bob1",
       type: "pendulum_bob",
       params: { radius: 22, angleDeg: 30, ropeLength: 200, mass: 1, fill: "#fff" },
       transform: { x: 0, y: 0 }, // solved by solver
+      // The pendulum_from relation is what makes the constraint solver
+      // place the bob at polar (ropeLength, angleDeg) from the pivot.
+      // Without it, the bob would just sit at (0, 0). The inference
+      // engine reads this relation to assign the bob its composite role.
       relations: [{ kind: "pendulum_from", target: "pivot1" }],
       zIndex: 2,
-      compositeOf: "pendulum_g1",
-      compositeRole: "bob",
     },
     {
       id: "rope1",
@@ -41,41 +44,37 @@ export const PENDULUM_30DEG: FigurateScene = {
       params: { from: "pivot1", to: "bob1", color: "#444", thickness: 1.5 },
       transform: { x: 0, y: 0 },
       zIndex: 1,
-      compositeOf: "pendulum_g1",
-      compositeRole: "rope",
     },
     {
       id: "theta_arc",
       type: "angle_marker",
+      // The arc's vertex follows the pivot (param below is the initial
+      // value; the derivation layer will keep it pinned to the pivot).
       params: { vertexX: 450, vertexY: 100, fromAngleDeg: 0, toAngleDeg: 30, radius: 50, label: "θ", color: "#1f6feb" },
       transform: { x: 450, y: 100 },
       zIndex: 3,
-      compositeOf: "pendulum_g1",
-      compositeRole: "theta",
     },
     {
       id: "tension",
       type: "vector",
-      // angleDeg is derived from bob→pivot direction. The value here is
-      // the initial value; once derivations run, it will be overwritten
-      // with the live computed angle.
+      // Anchored at the bob via origin_at relation. The inference engine
+      // labels this as the "tension" role (because the label is "T" and
+      // it points at the pivot); the derivation then sets angleDeg
+      // automatically to the bob→pivot direction.
       params: { magnitude: 80, angleDeg: 120, color: "#1f6feb", thickness: 2, label: "T" },
-      transform: { x: 0, y: 0 }, // attached to bob
+      transform: { x: 0, y: 0 },
       relations: [{ kind: "origin_at", target: "bob1", anchor: "center" }],
       zIndex: 4,
-      compositeOf: "pendulum_g1",
-      compositeRole: "tension",
     },
     {
       id: "weight",
       type: "vector",
-      // angleDeg is derived to 90° (always points down in screen-space).
+      // Anchored at the bob. Label "mg" → weight role → derivation sets
+      // angleDeg to 270° (straight down) automatically.
       params: { magnitude: 90, angleDeg: 90, color: "#c0392b", thickness: 2, label: "mg" },
       transform: { x: 0, y: 0 },
       relations: [{ kind: "origin_at", target: "bob1", anchor: "center" }],
       zIndex: 4,
-      compositeOf: "pendulum_g1",
-      compositeRole: "weight",
     },
   ],
 };

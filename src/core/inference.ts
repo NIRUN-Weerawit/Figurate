@@ -188,6 +188,17 @@ export function inferRoles(scene: FigurateScene): SceneObject[] {
   // A vector on a block parallel to the incline (uphill) = friction.
   inferVectorRoles(next, objects);
 
+  // Step 5: assign roles to angle_marker primitives that are part of a
+  // composite but have no role yet. An angle_marker near a pivot is the
+  // θ-arc.
+  for (const obj of next) {
+    if (obj.type !== "angle_marker") continue;
+    if (obj.compositeRole) continue;
+    if (!obj.compositeOf) continue;
+    // Default role for an angle_marker in a composite: theta.
+    obj.compositeRole = "theta";
+  }
+
   return next;
 }
 

@@ -12,7 +12,7 @@ import { useMemo, type ReactNode } from "react";
 import type { Force, ForceGroup } from "../core/forces";
 
 interface FBDRendererProps {
-  group: ForceGroup | null;
+  groups: ForceGroup[];
   /** Visual scale of force arrows (default 1.0). */
   scale?: number;
 }
@@ -50,49 +50,65 @@ function arrowHead(end: { x: number; y: number }, angleDeg: number, color: strin
   );
 }
 
-export function FBDRenderer({ group, scale = 1.0 }: FBDRendererProps) {
-  // Memoize the FBD computation per group. The group is recomputed by
-  // the parent when the scene or selected object changes, so we don't
-  // need to subscribe to anything here.
+export function FBDRenderer({ groups, scale = 1.0 }: FBDRendererProps) {
+  // Memoize the FBD computation per groups list. The list is recomputed
+  // by the parent when the scene or selected object changes, so we
+  // don't need to subscribe to anything here.
   const elements = useMemo<ReactNode>(() => {
-    if (!group) return null;
+    if (groups.length === 0) return null;
     const out: ReactNode[] = [];
-    for (let i = 0; i < group.forces.length; i++) {
-      const f = group.forces[i];
-      if (!f.enabled || !f.present) continue;
-      const end = arrowEndpoint(f.origin, f.magnitude * scale, f.directionDeg);
-      out.push(
-        <g key={`fbd-${group.objectId}-${f.type}`} className="fbd-force">
-          {/* the line */}
-          <line
-            x1={f.origin.x}
-            y1={f.origin.y}
-            x2={end.x}
-            y2={end.y}
-            stroke={f.color}
-            strokeWidth={2}
-            strokeLinecap="round"
-          />
-          {/* the arrow head */}
-          {arrowHead(end, f.directionDeg, f.color)}
-          {/* the label, offset slightly to the side of the arrow */}
-          <text
-            x={end.x + 10}
-            y={end.y - 5}
-            fontSize={13}
-            fontFamily="serif"
-            fontStyle="italic"
-            fontWeight="bold"
-            fill={f.color}
-          >
-            {f.label}
-          </text>
-        </g>
-      );
+    for (const group of groups) {
+      // Count how many forces are visible. We'll offset each force's
+      // origin by a small amount perpendicular to its direction, so
+      // multiple forces emanating from the same point don't overlap
+      // on top of each other. The offset is small (1-2px) so it
+      // doesn't visually shift the arrows much.
+      const visibleForces = group.forces.filter((f) => f.enabled && f.present);
+      const totalForces = visibleForces.length;
+      for (let i = 0; i < group.forces.length; i++) {
+        const f = group.forces[i];
+        if (!f.enabled || !f.present) continue;
+        // Compute the visible-rank of this force (0..totalForces-1).
+        const visibleRank = visibleForces.indexOf(f);
+        // Offset perpendicular to the force direction, in screen units.
+        // 1.5px per force, centered around the middle.
+        const perpRad = ((f.directionDeg - 90) * Math.PI) / 180;
+        const offsetPx = (visibleRank - (totalForces - 1) / 2) * 1.5;
+        const origin = {
+          x: f.origin.x + offsetPx * Math.cos(perpRad),
+          y: f.origin.y - offsetPx * Math.sin(perpRad),
+        };
+        const end = arrowEndpoint(origin, f.magnitude * scale, f.directionDeg);
+        out.push(
+          <g key={`fbd-${group.objectId}-${f.type}`} className="fbd-force">
+            <line
+              x1={origin.x}
+              y1={origin.y}
+              x2={end.x}
+              y2={end.y}
+              stroke={f.color}
+              strokeWidth={2}
+              strokeLinecap="round"
+            />
+            {arrowHead(end, f.directionDeg, f.color)}
+            <text
+              x={end.x + 10}
+              y={end.y - 5}
+              fontSize={13}
+              fontFamily="serif"
+              fontStyle="italic"
+              fontWeight="bold"
+              fill={f.color}
+            >
+              {f.label}
+            </text>
+          </g>
+        );
+      }
     }
     return out;
-  }, [group, scale]);
+  }, [groups, scale]);
 
-  if (!group) return null;
+  if (groups.length === 0) return null;
   return <g className="fbd-layer">{elements}</g>;
 }

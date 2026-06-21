@@ -80,15 +80,35 @@ function CategoryGroup({
       {expanded && (
         <div className="library-items">
           {items.map((p) => (
-            <button
+            <div
               key={p.type}
               className="library-item"
-              title={p.description}
-              onClick={() => onAdd(p.type)}
+              role="button"
+              tabIndex={0}
+              title={`${p.description} — drag to canvas to spawn, or click to spawn at center`}
+              draggable
+              onDragStart={(e) => {
+                // The drop target (SceneRenderer) reads this key.
+                e.dataTransfer.setData("application/x-figurate-type", p.type);
+                e.dataTransfer.effectAllowed = "copy";
+              }}
+              onClick={(e) => {
+                // Ignore clicks that were actually the end of a drag.
+                // The browser sets `dataTransfer.dropEffect` to "none"
+                // when the user dragged but the drop was cancelled.
+                if (e.detail === 0) return;
+                onAdd(p.type);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onAdd(p.type);
+                }
+              }}
             >
               <PrimitiveIcon type={p.type} />
               <span className="library-item-label">{p.label}</span>
-            </button>
+            </div>
           ))}
         </div>
       )}
