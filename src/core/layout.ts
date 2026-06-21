@@ -49,7 +49,7 @@ const PADDING = 6;
  */
 export function findNonOverlappingPosition(
   candidate: Vec2,
-  excludeId: string,
+  excludeId: string | null,
   allObjects: SceneObject[]
 ): Vec2 {
   const w = 60;

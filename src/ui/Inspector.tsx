@@ -36,7 +36,7 @@ export function Inspector() {
   const selectedIds = useSceneStore((s) => s.selectedIds);
   const select = useSceneStore((s) => s.select);
   const updateParams = useSceneStore((s) => s.updateParams);
-  const setTransform = useSceneStore((s) => s.setTransform);
+  const setTransformAndSolve = useSceneStore((s) => s.setTransformAndSolve);
   const removeObject = useSceneStore((s) => s.removeObject);
   const solve = useSceneStore((s) => s.solve);
   const setRoleVisible = useSceneStore((s) => s.setRoleVisible);
@@ -134,8 +134,7 @@ export function Inspector() {
               onChange={(e) => {
                 const v = parseFloat(e.target.value);
                 if (!Number.isNaN(v)) {
-                  setTransform(obj.id, { x: v });
-                  solve();
+                  setTransformAndSolve(obj.id, { x: v });
                 }
               }}
             />
@@ -146,8 +145,7 @@ export function Inspector() {
               onChange={(e) => {
                 const v = parseFloat(e.target.value);
                 if (!Number.isNaN(v)) {
-                  setTransform(obj.id, { y: v });
-                  solve();
+                  setTransformAndSolve(obj.id, { y: v });
                 }
               }}
             />

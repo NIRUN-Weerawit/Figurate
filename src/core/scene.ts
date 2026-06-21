@@ -11,9 +11,11 @@ import { immer } from "zustand/middleware/immer";
 import { nanoid } from "nanoid";
 import type { FigurateScene, SceneObject } from "./dsl";
 import { defaultParams, defaultTransform, getPrimitive } from "./registry";
+import { inferRoles } from "./inference";
 import { ConstraintSolver } from "./solver";
 import { recomputeAll, type DerivedCache, type Derivation, type FieldRef } from "./derivation";
 import { buildSceneDerivations } from "./derivations";
+import { findNonOverlappingPosition } from "./layout";
 
 const HISTORY_LIMIT = 100;
 
@@ -42,6 +44,12 @@ interface SceneState {
   updateParams: (id: string, params: Record<string, unknown>) => void;
   updateTransform: (id: string, transform: Partial<SceneObject["transform"]>) => void;
   setTransform: (id: string, transform: Partial<SceneObject["transform"]>) => void;
+  /** Like setTransform but also re-solves constraints. For Inspector edits. */
+  setTransformAndSolve: (id: string, transform: Partial<SceneObject["transform"]>) => void;
+  /** Apply a snap target — create the relation, set the position, and
+   *  re-run inference. Called by the renderer on mouseup when the user
+   *  dropped an object onto a snap target. */
+  applySnap: (candidate: import("./snap").SnapCandidate) => void;
   removeObject: (id: string) => void;
   /** Toggle visibility on a single object. */
   setVisible: (id: string, visible: boolean) => void;
@@ -108,10 +116,16 @@ export const useSceneStore = create<SceneState>()(
 
       addObject: (type, position) => {
         const def = getPrimitive(type);
+        // Compute spawn position: use the explicit position, the canvas
+        // center, or `defaultTransform()` (which falls back to center).
+        const scene = get().scene;
+        const cx = scene.canvas?.width ? scene.canvas.width / 2 : 450;
+        const cy = scene.canvas?.height ? scene.canvas.height / 2 : 300;
+        const spawnPos = position ?? { x: cx, y: cy };
         // Composite: insert the full group, return the anchor id.
         if (def?.composite) {
           const groupId = nanoid(8);
-          const built = def.composite.build(position ?? defaultTransform(type));
+          const built = def.composite.build(spawnPos);
           // Build the placeholder → real-id map for the composite.
           const roleToId = new Map<string, string>();
           const builtIds: string[] = [];
@@ -179,7 +193,7 @@ export const useSceneStore = create<SceneState>()(
             id,
             type,
             params: defaultParams(type),
-            transform: position ?? defaultTransform(type),
+            transform: spawnPos,
             zIndex: draft.scene.objects.length,
             visible: true,
           } as SceneObject);
@@ -218,14 +232,100 @@ export const useSceneStore = create<SceneState>()(
         });
       },
 
+      /**
+       * Update an object's transform WITHOUT solving. Used during drag —
+       * we want the object to move freely without the constraint solver
+       * snapping it back. The caller (renderer/App) is responsible for
+       * calling `solve()` on mouseup via `onCommitDrag`.
+       */
       setTransform: (id, transform) => {
-        // for inspector edits: record history, then re-solve so dependent
-        // objects follow (e.g. moving a pivot moves its bob).
         pushHistory("set transform");
         set((draft) => {
           const obj = draft.scene.objects.find((o) => o.id === id);
           if (!obj) return;
           Object.assign(obj.transform, transform);
+        });
+        // Drag-anchor: if the dragged object has a parametric source
+        // (e.g. a pendulum bob with `pendulum_from`), update the
+        // source parameter so the constraint holds the new position.
+        // Without this, the solver would snap the object back to the
+        // pre-drag position on mouseup.
+        const obj = get().scene.objects.find((o) => o.id === id);
+        if (obj && obj.relations) {
+          for (const rel of obj.relations) {
+            if (rel.kind === "pendulum_from" && obj.type === "pendulum_bob") {
+              const target = get().scene.objects.find((o) => o.id === rel.target);
+              if (target) {
+                const dx = obj.transform.x - target.transform.x;
+                const dy = obj.transform.y - target.transform.y;
+                // Convert to angle: bob-to-pivot angle. The solver's
+                // `pendulum_from` uses polar (L, angleDeg) from pivot, so
+                // we want the angle from pivot to bob in screen-space.
+                // angleDeg = 0 means bob directly below pivot; positive
+                // means to the right. atan2(dx, -dy) gives that:
+                //   dx=0, dy<0 (bob below pivot) → atan2(0, +) = 0 ✓
+                //   dx>0, dy<0 (bob to lower-right) → positive angle ✓
+                const angleDeg = (Math.atan2(dx, -dy) * 180) / Math.PI;
+                if (Number.isFinite(angleDeg)) {
+                  set((draft) => {
+                    const o = draft.scene.objects.find((oo) => oo.id === id);
+                    if (o) (o.params as Record<string, unknown>).angleDeg = angleDeg;
+                  });
+                }
+              }
+            }
+          }
+        }
+      },
+
+      /**
+       * Like `setTransform` but also runs the solver + inference. Used by
+       * the Inspector when the user edits a value directly — the change
+       * should propagate to dependent objects.
+       */
+      setTransformAndSolve: (id, transform) => {
+        get().setTransform(id, transform);
+        get().solve();
+      },
+
+      /**
+       * Apply a snap target on mouseup:
+       *   1. Set the dragged object's transform to the snap position.
+       *   2. Add the recommended relation to the dragged object.
+       *   3. Re-run inference so the smart decorations activate.
+       *   4. Re-run the solver so constraints are satisfied.
+       *
+       * For rope ends, the snap updates the rope's `from` / `to` param
+       * rather than adding a relation.
+       */
+      applySnap: (candidate) => {
+        pushHistory(`snap ${candidate.fromAttachId} → ${candidate.toAttachId}`);
+        set((draft) => {
+          const dragged = draft.scene.objects.find(
+            (o) => o.id === candidate.draggedObjId
+          );
+          if (!dragged) return;
+          // 1. Position
+          dragged.transform.x = candidate.snapPosition.x;
+          dragged.transform.y = candidate.snapPosition.y;
+          // 2. Relation (or rope-end update)
+          if (dragged.type === "rope") {
+            // Rope: update `from` or `to` based on which end was dragged.
+            // The relation stashed `ropeEnd` as a custom field.
+            const ropeEnd = (candidate.relation as { ropeEnd?: string }).ropeEnd;
+            if (ropeEnd === "from") dragged.params.from = candidate.targetObjId;
+            else if (ropeEnd === "to") dragged.params.to = candidate.targetObjId;
+          } else {
+            // Other objects: append the relation (or replace if same kind).
+            const rels = dragged.relations ?? [];
+            const sameKind = rels.findIndex(
+              (r) => r.kind === candidate.relation.kind
+            );
+            const newRel = candidate.relation;
+            if (sameKind >= 0) rels[sameKind] = newRel;
+            else rels.push(newRel);
+            dragged.relations = rels;
+          }
         });
         get().solve();
       },
@@ -384,11 +484,24 @@ export const useSceneStore = create<SceneState>()(
           }
         });
 
-        // Step 2: derivation layer (the "smart" part).
-        // The constraint solver gives us positions; the derivation layer
-        // gives us derived visual properties (vector angles, block
-        // rotation, θ-arc toAngle, etc.). It runs as a DAG so each node
-        // only re-derives when one of its parents changed.
+        // Step 2: role inference. The system recognizes known
+        // configurations (pendulum, incline+block) and assigns
+        // `compositeOf` + `compositeRole` to objects that don't have
+        // them yet. This lets the user build a pendulum by hand and
+        // have the smart decorations (T, mg, θ-arc) auto-activate.
+        // Inference is idempotent — never overrides existing tags.
+        const infScene = get().scene;
+        const afterInf = inferRoles(infScene);
+        // Write back the inferred scene.
+        set((draft) => {
+          draft.scene.objects = afterInf as SceneObject[];
+        });
+
+        // Step 3: derivation layer (the "smart" part). The constraint
+        // solver gives us positions; the derivation layer gives us
+        // derived visual properties (vector angles, block rotation,
+        // θ-arc toAngle, etc.). It runs as a DAG so each node only
+        // re-derives when one of its parents changed.
         //
         // We run in "conservative" mode here (re-derive everything) because
         // the solver just moved things around and we don't know which

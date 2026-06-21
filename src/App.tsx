@@ -16,6 +16,7 @@ export function App() {
   const toggleSelect = useSceneStore((s) => s.toggleSelect);
   const selectInRect = useSceneStore((s) => s.selectInRect);
   const setTransform = useSceneStore((s) => s.setTransform);
+  const applySnap = useSceneStore((s) => s.applySnap);
   const nudge = useSceneStore((s) => s.nudge);
   const solve = useSceneStore((s) => s.solve);
   const commit = useSceneStore((s) => s.commit);
@@ -107,6 +108,15 @@ export function App() {
             onCommitDrag={() => {
               solve();
               commit("drag");
+            }}
+            onApplySnap={(candidate) => {
+              // The snap engine already set the position during drag;
+              // on mouseup we just need to record the relation and
+              // commit to history. applySnap also re-runs solve so
+              // constraints are satisfied and inference runs to
+              // activate the smart decorations.
+              applySnap(candidate);
+              commit("snap");
             }}
           />
           <div className="canvas-hint">

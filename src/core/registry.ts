@@ -134,7 +134,12 @@ export function defaultParams(type: string): Record<string, unknown> {
  * Convenience: get the default transform for a primitive type.
  */
 export function defaultTransform(type: string): { x: number; y: number } {
-  return { x: 0, y: 0 };
+  // Spawn at canvas center by default. The actual canvas size isn't
+  // known at registry load time, so we use a 900x600 default (matching
+  // the sample scenes' canvas). The caller can override this with an
+  // explicit position. `addObject` will read the scene's actual canvas
+  // size and snap to a non-overlapping position near the center.
+  return { x: 450, y: 300 };
 }
 
 /**

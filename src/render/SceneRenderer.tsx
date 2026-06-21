@@ -22,6 +22,12 @@ import { useMemo, useState } from "react";
 import type { FigurateScene, SceneObject, Vec2 } from "../core/dsl";
 import { getPrimitive } from "../core/registry";
 import type { DerivedCache } from "../core/derivation";
+import { findSnapTarget, type SnapCandidate } from "../core/snap";
+import { ensureDefaultAttachPoints } from "../core/snap";
+
+// Make sure each primitive has at least default attach points registered.
+// Idempotent — safe to call at module load.
+ensureDefaultAttachPoints();
 
 interface SceneRendererProps {
   scene: FigurateScene;
@@ -36,6 +42,9 @@ interface SceneRendererProps {
   onSetTransform: (id: string, transform: Partial<{ x: number; y: number }>) => void;
   onNudge: (ids: string[], dx: number, dy: number) => void;
   onCommitDrag: () => void;
+  /** Apply a snap target on mouseup. Creates the relation and finalizes
+   *  the drag. Re-runs inference so the smart decorations activate. */
+  onApplySnap: (candidate: SnapCandidate) => void;
 }
 
 export function SceneRenderer({
@@ -49,6 +58,7 @@ export function SceneRenderer({
   onSetTransform,
   onNudge,
   onCommitDrag,
+  onApplySnap,
 }: SceneRendererProps) {
   // Sort by zIndex then by insertion order
   const sorted = useMemo(
@@ -143,6 +153,7 @@ export function SceneRenderer({
           onSetTransform={onSetTransform}
           onNudge={onNudge}
           onCommitDrag={onCommitDrag}
+          onApplySnap={onApplySnap}
         />
       ))}
       {marquee && (
@@ -188,6 +199,7 @@ function RenderObject({
   onSetTransform,
   onNudge,
   onCommitDrag,
+  onApplySnap,
 }: {
   obj: SceneObject;
   scene: FigurateScene;
@@ -199,6 +211,7 @@ function RenderObject({
   onSetTransform: (id: string, transform: Partial<{ x: number; y: number }>) => void;
   onNudge: (ids: string[], dx: number, dy: number) => void;
   onCommitDrag: () => void;
+  onApplySnap: (candidate: SnapCandidate) => void;
 }) {
   const def = getPrimitive(obj.type);
   if (!def) return null;
@@ -246,16 +259,50 @@ function RenderObject({
     }
     const constraintAware = e.altKey;
     let lastPos = startPt;
+    // Snap state. While `snap` is non-null, the renderer is previewing
+    // a snap target. On mouseup, we apply the snap (create relation + set position).
+    let snap: SnapCandidate | null = null;
 
     function onMove(ev: MouseEvent) {
       const w = eventToWorld(ev, svg!);
       const dx = w.x - startPt.x;
       const dy = w.y - startPt.y;
       lastPos = w;
+      // Snap detection (only when dragging a single object — multi-select
+      // doesn't snap, the user can group-drag freely).
+      if (dragIds.length === 1) {
+        const dragged = scene.objects.find((o) => o.id === obj.id);
+        if (dragged) {
+          // Build a "what would the dragged object look like at this position"
+          // pseudo-object for the snap query. The real object is still at its
+          // original position; the snap engine compares attach points as if the
+          // object were at the candidate position.
+          const candidate: SceneObject = {
+            ...dragged,
+            transform: {
+              ...dragged.transform,
+              x: startTransform.x + dx,
+              y: startTransform.y + dy,
+            },
+          };
+          const candidateScene: FigurateScene = {
+            ...scene,
+            objects: scene.objects.map((o) =>
+              o.id === dragged.id ? candidate : o
+            ),
+          };
+          snap = findSnapTarget(candidate, candidateScene);
+          if (snap) {
+            // Apply the snap position to the dragged object. The relation
+            // is created on mouseup, not here, so the user can drag away
+            // if they change their mind.
+            onSetTransform(obj.id, snap.snapPosition);
+            return;
+          }
+        }
+      }
+      // No snap: regular drag.
       if (constraintAware) {
-        // Place only the dragged object; the solver will re-derive everything
-        // else. For a multi-select Alt-drag we just place the first one and let
-        // the rest snap to whatever the solver produces (this is the rare case).
         onSetTransform(obj.id, {
           x: startTransform.x + dx,
           y: startTransform.y + dy,
@@ -276,7 +323,15 @@ function RenderObject({
     function onUp() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
-      onCommitDrag();
+      // If a snap was active, apply it now: create the relation, set
+      // the position, and re-run inference so the smart decorations
+      // activate. The position is already set during onMove, so we
+      // just need the relation.
+      if (snap) {
+        onApplySnap(snap);
+      } else {
+        onCommitDrag();
+      }
     }
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
