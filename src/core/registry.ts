@@ -11,7 +11,8 @@
  * generically (it only needs anchor points + transform coords).
  */
 
-import type { Anchor, Vec2 } from "./dsl";
+import type { Anchor, FigurateScene, Vec2 } from "./dsl";
+import type { Derivation } from "./derivation";
 
 export type ParamType = "number" | "string" | "boolean" | "color" | "angle";
 
@@ -38,6 +39,44 @@ export interface PrimitiveDefinition {
   params: ParamSchema[];
   /** SVG renderer; receives transform + params + style */
   render: (props: RenderProps) => React.ReactNode;
+  /**
+   * If set, this primitive is a *composite* — when added via the library it
+   * spawns a set of child primitives automatically. The factory returns the
+   * full list of objects to insert into the scene, sharing a `compositeOf`
+   * id (the first object's id). The first object in the array is the
+   * "anchor" — its position is what `addObject` returns.
+   */
+  composite?: CompositeFactory;
+  /** Default decoration set: roles that ship auto-rendered with this composite. */
+  defaultDecorations?: string[];
+  /**
+   * Default derivations for objects of this type. The function receives the
+   * object's id and the scene, and returns the list of derivations that
+   * belong to a specific instance of this primitive. Most primitives don't
+   * need this — they just render their own fields. Use it for primitives
+   * that *depend on other objects' fields* and need to auto-update, like
+   * the tension vector (aimAt) or the block on an incline (mirror incline
+   * angle into its rotation).
+   */
+  derives?: (objectId: string, scene: FigurateScene) => Derivation[];
+}
+
+/**
+ * A composite factory builds the full object list for a composite primitive.
+ * The caller (`addObject`) receives back the anchor id and inserts all objects
+ * into the scene sharing the composite group id.
+ */
+export interface CompositeFactory {
+  /** The anchor object's type (e.g. "pendulum_pivot"). */
+  anchorType: string;
+  /** Build the full list of objects centered around `anchorPos`. */
+  build: (anchorPos: { x: number; y: number }) => Array<{
+    type: string;
+    params: Record<string, unknown>;
+    transform: { x: number; y: number; rotation?: number };
+    relations?: import("./dsl").Relation[];
+    compositeRole: string;
+  }>;
 }
 
 export interface RenderProps {
@@ -45,6 +84,17 @@ export interface RenderProps {
   params: Record<string, unknown>;
   style?: Record<string, unknown>;
   selected?: boolean;
+  /** The full scene, so the renderer can do collision-aware label placement. */
+  scene?: import("./dsl").FigurateScene;
+  /** This object's id (so the renderer can exclude itself from collision checks). */
+  objId?: string;
+  /**
+   * Derived values keyed by field name (e.g. { "params.angleDeg": 28 }).
+   * The renderer should prefer derived values over the underlying params
+   * for any field that has a derivation. Lets the tension vector use the
+   * auto-computed angle instead of the baked-in one.
+   */
+  derived?: import("./derivation").DerivedCache;
 }
 
 const registry = new Map<string, PrimitiveDefinition>();

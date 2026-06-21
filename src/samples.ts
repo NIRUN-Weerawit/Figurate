@@ -9,6 +9,12 @@ export const PENDULUM_30DEG: FigurateScene = {
   version: "0.1.0",
   meta: { title: "Pendulum at 30°", subject: "physics:mechanics" },
   canvas: { width: 900, height: 600, background: "#fafafa", grid: { enabled: true, spacing: 20, color: "#e8e8e8" } },
+  // Note: every object below carries `compositeOf: "pendulum_g1"` and a
+  // `compositeRole`. The derivation layer in `core/derivations.ts` reads
+  // those fields to wire the T vector to the bob→pivot direction, the θ-arc
+  // to bob.params.angleDeg, and so on. Without these tags, the figures
+  // still render — but the derivations don't activate, and you'll have to
+  // edit each force vector's angleDeg manually.
   objects: [
     {
       id: "pivot1",
@@ -16,6 +22,8 @@ export const PENDULUM_30DEG: FigurateScene = {
       params: { barWidth: 80, hatchSpacing: 8 },
       transform: { x: 450, y: 100 },
       zIndex: 0,
+      compositeOf: "pendulum_g1",
+      compositeRole: "pivot",
     },
     {
       id: "bob1",
@@ -24,6 +32,8 @@ export const PENDULUM_30DEG: FigurateScene = {
       transform: { x: 0, y: 0 }, // solved by solver
       relations: [{ kind: "pendulum_from", target: "pivot1" }],
       zIndex: 2,
+      compositeOf: "pendulum_g1",
+      compositeRole: "bob",
     },
     {
       id: "rope1",
@@ -31,6 +41,8 @@ export const PENDULUM_30DEG: FigurateScene = {
       params: { from: "pivot1", to: "bob1", color: "#444", thickness: 1.5 },
       transform: { x: 0, y: 0 },
       zIndex: 1,
+      compositeOf: "pendulum_g1",
+      compositeRole: "rope",
     },
     {
       id: "theta_arc",
@@ -38,22 +50,32 @@ export const PENDULUM_30DEG: FigurateScene = {
       params: { vertexX: 450, vertexY: 100, fromAngleDeg: 0, toAngleDeg: 30, radius: 50, label: "θ", color: "#1f6feb" },
       transform: { x: 450, y: 100 },
       zIndex: 3,
+      compositeOf: "pendulum_g1",
+      compositeRole: "theta",
     },
     {
       id: "tension",
       type: "vector",
+      // angleDeg is derived from bob→pivot direction. The value here is
+      // the initial value; once derivations run, it will be overwritten
+      // with the live computed angle.
       params: { magnitude: 80, angleDeg: 120, color: "#1f6feb", thickness: 2, label: "T" },
       transform: { x: 0, y: 0 }, // attached to bob
       relations: [{ kind: "origin_at", target: "bob1", anchor: "center" }],
       zIndex: 4,
+      compositeOf: "pendulum_g1",
+      compositeRole: "tension",
     },
     {
       id: "weight",
       type: "vector",
-      params: { magnitude: 90, angleDeg: -90, color: "#c0392b", thickness: 2, label: "mg" },
+      // angleDeg is derived to 90° (always points down in screen-space).
+      params: { magnitude: 90, angleDeg: 90, color: "#c0392b", thickness: 2, label: "mg" },
       transform: { x: 0, y: 0 },
       relations: [{ kind: "origin_at", target: "bob1", anchor: "center" }],
       zIndex: 4,
+      compositeOf: "pendulum_g1",
+      compositeRole: "weight",
     },
   ],
 };
@@ -69,38 +91,53 @@ export const BLOCK_ON_INCLINE: FigurateScene = {
       params: { length: 280, angleDeg: 25, thickness: 4, hatching: true },
       transform: { x: 250, y: 450 },
       zIndex: 0,
+      compositeOf: "incline_g1",
+      compositeRole: "incline",
     },
     {
       id: "block1",
       type: "block",
+      // transform.rotation is derived from incline1.angleDeg. Set to 0
+      // initially; the derivation layer will overwrite it to 25.
       params: { width: 70, height: 45, fill: "#fff", mass: 2 },
-      transform: { x: 0, y: 0 },
+      transform: { x: 0, y: 0, rotation: 0 },
       relations: [{ kind: "rests_on", target: "incline1", fraction: 0.55 }],
       zIndex: 2,
+      compositeOf: "incline_g1",
+      compositeRole: "block",
     },
     {
       id: "f_gravity",
       type: "vector",
-      params: { magnitude: 100, angleDeg: -90, color: "#c0392b", thickness: 2.5, label: "mg" },
+      // angleDeg is derived to 90° (always down in screen-space).
+      params: { magnitude: 100, angleDeg: 90, color: "#c0392b", thickness: 2.5, label: "mg" },
       transform: { x: 0, y: 0 },
       relations: [{ kind: "origin_at", target: "block1", anchor: "center" }],
       zIndex: 4,
+      compositeOf: "incline_g1",
+      compositeRole: "gravity",
     },
     {
       id: "f_normal",
       type: "vector",
-      params: { magnitude: 90, angleDeg: 65, color: "#1f6feb", thickness: 2.5, label: "N" },
+      // angleDeg is derived to incline.angleDeg + 90° (perpendicular to surface).
+      params: { magnitude: 90, angleDeg: 115, color: "#1f6feb", thickness: 2.5, label: "N" },
       transform: { x: 0, y: 0 },
       relations: [{ kind: "origin_at", target: "block1", anchor: "center" }],
       zIndex: 4,
+      compositeOf: "incline_g1",
+      compositeRole: "normal",
     },
     {
       id: "f_friction",
       type: "vector",
+      // angleDeg is derived to incline.angleDeg + 180° (up the slope).
       params: { magnitude: 42, angleDeg: 205, color: "#e67e22", thickness: 2.5, label: "f" },
       transform: { x: 0, y: 0 },
       relations: [{ kind: "origin_at", target: "block1", anchor: "center" }],
       zIndex: 4,
+      compositeOf: "incline_g1",
+      compositeRole: "friction",
     },
     {
       id: "theta_arc",
@@ -108,6 +145,8 @@ export const BLOCK_ON_INCLINE: FigurateScene = {
       params: { vertexX: 250, vertexY: 450, fromAngleDeg: 0, toAngleDeg: 25, radius: 50, label: "25°", color: "#1f6feb" },
       transform: { x: 250, y: 450 },
       zIndex: 3,
+      compositeOf: "incline_g1",
+      compositeRole: "theta",
     },
   ],
 };
@@ -151,7 +190,15 @@ export const FREE_BODY: FigurateScene = {
   ],
 };
 
+const EMPTY_SCENE: FigurateScene = {
+  version: "0.1.0",
+  meta: { title: "Untitled", subject: "physics:mechanics" },
+  canvas: { width: 900, height: 600, background: "#fafafa", grid: { enabled: true, spacing: 20, color: "#e8e8e8" } },
+  objects: [],
+};
+
 export const SAMPLE_SCENES: Record<string, { label: string; scene: FigurateScene }> = {
+  empty: { label: "(empty)", scene: EMPTY_SCENE },
   pendulum: { label: "Pendulum at 30°", scene: PENDULUM_30DEG },
   incline: { label: "Block on 25° incline", scene: BLOCK_ON_INCLINE },
   freebody: { label: "Free-body diagram", scene: FREE_BODY },

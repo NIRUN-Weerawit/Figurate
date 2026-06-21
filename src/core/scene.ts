@@ -10,8 +10,10 @@ import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
 import { nanoid } from "nanoid";
 import type { FigurateScene, SceneObject } from "./dsl";
-import { defaultParams, defaultTransform } from "./registry";
+import { defaultParams, defaultTransform, getPrimitive } from "./registry";
 import { ConstraintSolver } from "./solver";
+import { recomputeAll, type DerivedCache, type Derivation, type FieldRef } from "./derivation";
+import { buildSceneDerivations } from "./derivations";
 
 const HISTORY_LIMIT = 100;
 
@@ -22,7 +24,15 @@ interface HistoryEntry {
 
 interface SceneState {
   scene: FigurateScene;
+  /** Derived-value cache: params/transform fields that are computed from
+   *  other objects (e.g. the tension vector's angle is derived from the
+   *  bob→pivot direction). The renderer reads this instead of `params`
+   *  for any field that has a derivation rule. */
+  derived: DerivedCache;
+  /** Primary selection (for inspector + single-object operations). */
   selectedId: string | null;
+  /** All selected object ids (for multi-select operations like group drag, delete, group transform). */
+  selectedIds: string[];
   past: HistoryEntry[];
   future: HistoryEntry[];
 
@@ -33,11 +43,29 @@ interface SceneState {
   updateTransform: (id: string, transform: Partial<SceneObject["transform"]>) => void;
   setTransform: (id: string, transform: Partial<SceneObject["transform"]>) => void;
   removeObject: (id: string) => void;
+  /** Toggle visibility on a single object. */
+  setVisible: (id: string, visible: boolean) => void;
+  /** Toggle visibility on every object in a composite (sharing the same compositeOf). */
+  setCompositeVisible: (compositeOf: string, visible: boolean) => void;
+  /** Toggle visibility on every decoration of a given role within a composite. */
+  setRoleVisible: (compositeOf: string, role: string, visible: boolean) => void;
+  /** Move an object's transform by a delta in world coords (used for group drag). */
+  nudge: (ids: string[], dx: number, dy: number) => void;
+
+  // selection
   select: (id: string | null) => void;
+  /** Toggle an id in the multi-select set. Pass `id: null` to clear all. */
+  toggleSelect: (id: string) => void;
+  /** Replace the selection set entirely. */
+  setSelection: (ids: string[]) => void;
+  /** Add all ids whose (x,y) falls inside the rect (in world coords). */
+  selectInRect: (rect: { x: number; y: number; w: number; h: number }) => void;
 
   // history
   undo: () => void;
   redo: () => void;
+  /** Record a "drag end" snapshot — the caller is doing live drag updates and wants to checkpoint. */
+  commit: (label?: string) => void;
 
   // scene-wide
   loadScene: (scene: FigurateScene, label?: string) => void;
@@ -72,11 +100,78 @@ export const useSceneStore = create<SceneState>()(
 
     return {
       scene: DEFAULT_SCENE,
+      derived: {} as DerivedCache,
       selectedId: null,
+      selectedIds: [],
       past: [],
       future: [],
 
       addObject: (type, position) => {
+        const def = getPrimitive(type);
+        // Composite: insert the full group, return the anchor id.
+        if (def?.composite) {
+          const groupId = nanoid(8);
+          const built = def.composite.build(position ?? defaultTransform(type));
+          // Build the placeholder → real-id map for the composite.
+          const roleToId = new Map<string, string>();
+          const builtIds: string[] = [];
+          const allObjects: SceneObject[] = [];
+          for (let i = 0; i < built.length; i++) {
+            const b = built[i];
+            const realId = i === 0
+              ? `${def.composite.anchorType}_${nanoid(6)}`
+              : `${b.type}_${nanoid(6)}`;
+            builtIds.push(realId);
+            roleToId.set(b.compositeRole, realId);
+          }
+          // Resolve placeholder targets like "<bob>", "<block>" inside params
+          // and relations so the children actually wire up to each other.
+          function resolvePlaceholders(value: unknown): unknown {
+            if (typeof value === "string" && value.startsWith("<") && value.endsWith(">")) {
+              const role = value.slice(1, -1);
+              return roleToId.get(role) ?? value;
+            }
+            return value;
+          }
+          function resolveInParams(params: Record<string, unknown>): Record<string, unknown> {
+            const out: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(params)) out[k] = resolvePlaceholders(v);
+            return out;
+          }
+          function resolveInRelations(rels: import("./dsl").Relation[] | undefined): import("./dsl").Relation[] | undefined {
+            if (!rels) return undefined;
+            return rels.map((r) => {
+              if ("target" in r && typeof r.target === "string") {
+                return { ...r, target: resolvePlaceholders(r.target) as string };
+              }
+              return r;
+            });
+          }
+
+          pushHistory(`add composite ${type}`);
+          set((draft) => {
+            for (let i = 0; i < built.length; i++) {
+              const b = built[i];
+              allObjects.push({
+                id: builtIds[i],
+                type: b.type,
+                params: resolveInParams(b.params),
+                transform: b.transform,
+                relations: resolveInRelations(b.relations),
+                zIndex: draft.scene.objects.length,
+                visible: true,
+                compositeOf: groupId,
+                compositeRole: b.compositeRole,
+              } as SceneObject);
+            }
+            for (const o of allObjects) draft.scene.objects.push(o);
+            draft.selectedId = builtIds[0];
+            draft.selectedIds = [builtIds[0]];
+          });
+          get().solve();
+          return builtIds[0];
+        }
+        // Plain primitive.
         const id = `${type}_${nanoid(6)}`;
         pushHistory(`add ${type}`);
         set((draft) => {
@@ -86,8 +181,10 @@ export const useSceneStore = create<SceneState>()(
             params: defaultParams(type),
             transform: position ?? defaultTransform(type),
             zIndex: draft.scene.objects.length,
+            visible: true,
           } as SceneObject);
           draft.selectedId = id;
+          draft.selectedIds = [id];
         });
         get().solve();
         return id;
@@ -138,12 +235,95 @@ export const useSceneStore = create<SceneState>()(
         set((draft) => {
           draft.scene.objects = draft.scene.objects.filter((o) => o.id !== id);
           if (draft.selectedId === id) draft.selectedId = null;
+          draft.selectedIds = draft.selectedIds.filter((sid) => sid !== id);
         });
       },
 
       select: (id) => {
         set((draft) => {
           draft.selectedId = id;
+          draft.selectedIds = id ? [id] : [];
+        });
+      },
+
+      toggleSelect: (id) => {
+        set((draft) => {
+          if (draft.selectedIds.includes(id)) {
+            draft.selectedIds = draft.selectedIds.filter((s) => s !== id);
+            if (draft.selectedId === id) {
+              draft.selectedId = draft.selectedIds[0] ?? null;
+            }
+          } else {
+            draft.selectedIds.push(id);
+            draft.selectedId = id;
+          }
+        });
+      },
+
+      setSelection: (ids) => {
+        set((draft) => {
+          // de-dupe, preserve only ids that exist in the scene
+          const valid = ids.filter((id) => draft.scene.objects.some((o) => o.id === id));
+          draft.selectedIds = valid;
+          draft.selectedId = valid[0] ?? null;
+        });
+      },
+
+      setVisible: (id, visible) => {
+        pushHistory(visible ? "show" : "hide");
+        set((draft) => {
+          const obj = draft.scene.objects.find((o) => o.id === id);
+          if (!obj) return;
+          obj.visible = visible;
+        });
+      },
+
+      setCompositeVisible: (compositeOf, visible) => {
+        pushHistory(visible ? "show composite" : "hide composite");
+        set((draft) => {
+          for (const obj of draft.scene.objects) {
+            if (obj.compositeOf === compositeOf) obj.visible = visible;
+          }
+        });
+      },
+
+      setRoleVisible: (compositeOf, role, visible) => {
+        pushHistory(visible ? `show ${role}` : `hide ${role}`);
+        set((draft) => {
+          for (const obj of draft.scene.objects) {
+            if (obj.compositeOf === compositeOf && obj.compositeRole === role) {
+              obj.visible = visible;
+            }
+          }
+        });
+      },
+
+      nudge: (ids, dx, dy) => {
+        set((draft) => {
+          for (const id of ids) {
+            const obj = draft.scene.objects.find((o) => o.id === id);
+            if (obj && !obj.locked) {
+              obj.transform.x += dx;
+              obj.transform.y += dy;
+            }
+          }
+        });
+        // don't push history every frame; the caller (drag handler) commits on mouseup
+      },
+
+      selectInRect: (rect) => {
+        set((draft) => {
+          const x1 = rect.x;
+          const y1 = rect.y;
+          const x2 = rect.x + rect.w;
+          const y2 = rect.y + rect.h;
+          const hits: string[] = [];
+          for (const obj of draft.scene.objects) {
+            const { x, y } = obj.transform;
+            if (x >= x1 && x <= x2 && y >= y1 && y <= y2) hits.push(obj.id);
+          }
+          draft.selectedIds = hits;
+          draft.selectedId = hits[0] ?? null;
         });
       },
 
@@ -156,6 +336,8 @@ export const useSceneStore = create<SceneState>()(
           draft.scene = prev.scene;
         });
       },
+
+      commit: (label) => pushHistory(label ?? "commit"),
 
       redo: () => {
         set((draft) => {
@@ -185,9 +367,9 @@ export const useSceneStore = create<SceneState>()(
       },
 
       solve: () => {
-        // run the solver via a writeBack callback so Immer mutations are
-        // detected (the scene passed in is frozen)
-        const scene = get().scene;
+        // Step 1: constraint solver (positions, relations).
+        // The solver writes back via a callback so Immer mutations are
+        // detected (the scene passed in is frozen).
         set((draft) => {
           const warnings = solver.solve(draft.scene, (id, x, y) => {
             const obj = draft.scene.objects.find((o) => o.id === id);
@@ -201,10 +383,36 @@ export const useSceneStore = create<SceneState>()(
             console.warn("Solver warnings:", warnings);
           }
         });
-        // touch scene reference so subscribers re-render
-        // (set() with no changes won't trigger; force a noop patch)
+
+        // Step 2: derivation layer (the "smart" part).
+        // The constraint solver gives us positions; the derivation layer
+        // gives us derived visual properties (vector angles, block
+        // rotation, θ-arc toAngle, etc.). It runs as a DAG so each node
+        // only re-derives when one of its parents changed.
+        //
+        // We run in "conservative" mode here (re-derive everything) because
+        // the solver just moved things around and we don't know which
+        // parents changed. The smart mode is used elsewhere (e.g. after
+        // a single param edit) where the caller knows exactly which
+        // fields changed.
+        //
+        // Important: we run the recompute on a *copy* of the cache and
+        // then write the result back through `set`. Mutating the store's
+        // derived cache directly is illegal under Immer — it freezes the
+        // state object so derivations can't write to it.
+        const scene = get().scene;
+        const derivations = buildSceneDerivations(scene);
+        const nextDerived: DerivedCache = { ...get().derived };
+        recomputeAll(derivations, scene, nextDerived, null);
+
+        // Touch a known field so subscribers re-render, and write the
+        // new derived cache.
         set((draft) => {
           draft.scene.meta.title = draft.scene.meta.title;
+          // Replace the cache wholesale. Immer will accept the new
+          // object since it's a fresh reference.
+          for (const k of Object.keys(draft.derived)) delete draft.derived[k];
+          Object.assign(draft.derived, nextDerived);
         });
       },
 

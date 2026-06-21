@@ -85,6 +85,12 @@ export interface SceneObject<P = Record<string, unknown>> {
   relations?: Relation[];
   zIndex?: number;
   locked?: boolean;
+  /** When false, the object is hidden in the canvas but kept in the scene. */
+  visible?: boolean;
+  /** For composite primitive decorations: the parent composite's id. Lets us hide/show an entire group. */
+  compositeOf?: string;
+  /** For composite primitive decorations: a stable role name within the composite (e.g. "tension", "theta"). */
+  compositeRole?: string;
 }
 
 export interface CanvasConfig {

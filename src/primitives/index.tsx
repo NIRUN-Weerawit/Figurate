@@ -16,6 +16,7 @@
 
 import { registerPrimitive } from "../core/registry";
 import type { PrimitiveDefinition } from "../core/registry";
+import { findNonOverlappingPosition } from "../core/layout";
 
 const pivot: PrimitiveDefinition = {
   type: "pendulum_pivot",
@@ -191,7 +192,7 @@ const block: PrimitiveDefinition = {
     { name: "fill", type: "color", default: "#fff" },
     { name: "mass", type: "number", default: 2, min: 0.01, max: 1000, step: 0.1, unit: "kg" },
   ],
-  render: ({ transform, params, style: rawStyle }) => {
+  render: ({ transform, params, style: rawStyle, derived }) => {
     const style = (rawStyle ?? {}) as { stroke?: string; strokeWidth?: number; fill?: string; rotation?: number };
 
     const w = (params.width as number) ?? 60;
@@ -199,8 +200,17 @@ const block: PrimitiveDefinition = {
     const fill = (params.fill as string) ?? "#fff";
     const stroke = style?.stroke ?? "#222";
     const sw = style?.strokeWidth ?? 1.5;
+    // Rotation: prefer the derived value (e.g. block-on-incline mirrors the
+    // incline's angle), then transform.rotation, then style.rotation as a
+    // last-resort fallback. This is the "smart primitive" pattern: the
+    // derivation system owns the value when there's a rule; the user can
+    // still set it manually otherwise.
+    const rot = (derived?.["transform.rotation"] as number | undefined)
+      ?? transform.rotation
+      ?? style?.rotation
+      ?? 0;
     return (
-      <g transform={`rotate(${style?.rotation ?? 0} ${transform.x} ${transform.y})`}>
+      <g transform={`rotate(${rot} ${transform.x} ${transform.y})`}>
         <rect
           x={transform.x - w / 2}
           y={transform.y - h / 2}
@@ -276,29 +286,41 @@ const vector: PrimitiveDefinition = {
     { name: "dashed", type: "boolean", default: false },
     { name: "label", type: "string", default: "F" },
   ],
-  render: ({ transform, params }) => {
-    const mag = (params.magnitude as number) ?? 80;
-    const angleDeg = (params.angleDeg as number) ?? 0;
-    const color = (params.color as string) ?? "#c0392b";
-    const thickness = (params.thickness as number) ?? 2;
-    const dashed = (params.dashed as boolean) ?? false;
-    const label = (params.label as string) ?? "F";
-    const rad = (angleDeg * Math.PI) / 180;
-    const x2 = transform.x + mag * Math.cos(rad);
-    const y2 = transform.y - mag * Math.sin(rad);
+  render: ({ transform, params, scene, objId, derived }) => {
+      // Angle: prefer the derived value (e.g. T vector auto-aims at the
+      // pivot; N vector is perpendicular to the incline; mg is always
+      // straight down). Falls back to the user-editable params.angleDeg.
+      const mag = (params.magnitude as number) ?? 80;
+      const angleDeg = (derived?.["params.angleDeg"] as number | undefined)
+        ?? (params.angleDeg as number) ?? 0;
+      const color = (params.color as string) ?? "#c0392b";
+      const thickness = (params.thickness as number) ?? 2;
+      const dashed = (params.dashed as boolean) ?? false;
+      const label = (params.label as string) ?? "F";
+      const rad = (angleDeg * Math.PI) / 180;
+      const x2 = transform.x + mag * Math.cos(rad);
+      const y2 = transform.y - mag * Math.sin(rad);
 
-    // Arrowhead
-    const headLen = 12;
-    const headAngle = Math.PI / 6;
-    const ax1 = x2 - headLen * Math.cos(rad - headAngle);
-    const ay1 = y2 + headLen * Math.sin(rad - headAngle);
-    const ax2 = x2 - headLen * Math.cos(rad + headAngle);
-    const ay2 = y2 + headLen * Math.sin(rad + headAngle);
+      // Arrowhead
+      const headLen = 12;
+      const headAngle = Math.PI / 6;
+      const ax1 = x2 - headLen * Math.cos(rad - headAngle);
+      const ay1 = y2 + headLen * Math.sin(rad - headAngle);
+      const ax2 = x2 - headLen * Math.cos(rad + headAngle);
+      const ay2 = y2 + headLen * Math.sin(rad + headAngle);
 
-    // Label position: just past the arrowhead
-    const labelOffset = 16;
-    const lx = x2 + labelOffset * Math.cos(rad);
-    const ly = y2 - labelOffset * Math.sin(rad);
+      // Label position: just past the arrowhead, nudged to avoid overlapping
+      // other objects in the scene.
+      const labelOffset = 16;
+      const natural = {
+        x: x2 + labelOffset * Math.cos(rad),
+        y: y2 - labelOffset * Math.sin(rad),
+      };
+      const finalLabel = scene && objId
+        ? findNonOverlappingPosition(natural, objId, scene.objects)
+        : natural;
+      const lx = finalLabel.x;
+      const ly = finalLabel.y;
 
     return (
       <g>
@@ -380,16 +402,27 @@ const angleMarker: PrimitiveDefinition = {
     { name: "label", type: "string", default: "θ" },
     { name: "color", type: "color", default: "#1f6feb" },
   ],
-  render: ({ transform, params }) => {
+  render: ({ transform, params, derived }) => {
     const r = (params.radius as number) ?? 30;
-    const fromRad = ((params.fromAngleDeg as number) ?? 0) * Math.PI / 180;
-    const toRad = ((params.toAngleDeg as number) ?? 30) * Math.PI / 180;
+    // toAngleDeg is derived from the bob's angleDeg (when this is a θ-arc
+    // on a pendulum composite). Falls back to the user-editable value.
+    const fromAngleDeg = (params.fromAngleDeg as number) ?? 0;
+    const toAngleDeg = (derived?.["params.toAngleDeg"] as number | undefined)
+      ?? (params.toAngleDeg as number) ?? 30;
+    // Vertex: prefer derived (mirrors pivot position), then params, then
+    // transform.
+    const vx = (derived?.["params.vertexX"] as number | undefined)
+      ?? (params.vertexX as number) ?? transform.x;
+    const vy = (derived?.["params.vertexY"] as number | undefined)
+      ?? (params.vertexY as number) ?? transform.y;
     const color = (params.color as string) ?? "#1f6feb";
     const label = (params.label as string) ?? "θ";
-    const x1 = transform.x + r * Math.cos(fromRad);
-    const y1 = transform.y - r * Math.sin(fromRad);
-    const x2 = transform.x + r * Math.cos(toRad);
-    const y2 = transform.y - r * Math.sin(toRad);
+    const fromRad = (fromAngleDeg * Math.PI) / 180;
+    const toRad = (toAngleDeg * Math.PI) / 180;
+    const x1 = vx + r * Math.cos(fromRad);
+    const y1 = vy - r * Math.sin(fromRad);
+    const x2 = vx + r * Math.cos(toRad);
+    const y2 = vy - r * Math.sin(toRad);
     const largeArc = Math.abs((toRad - fromRad)) > Math.PI ? 1 : 0;
     return (
       <g>
@@ -400,8 +433,8 @@ const angleMarker: PrimitiveDefinition = {
           strokeWidth={1.5}
         />
         <text
-          x={transform.x + (r + 12) * Math.cos((fromRad + toRad) / 2)}
-          y={transform.y - (r + 12) * Math.sin((fromRad + toRad) / 2)}
+          x={vx + (r + 12) * Math.cos((fromRad + toRad) / 2)}
+          y={vy - (r + 12) * Math.sin((fromRad + toRad) / 2)}
           fontSize={14}
           fill={color}
           fontStyle="italic"
@@ -437,6 +470,179 @@ const textLabel: PrimitiveDefinition = {
   },
 };
 
+/**
+ * Composite: Pendulum
+ *
+ * Drop a "Pendulum" into the canvas and you get a fully-wired diagram:
+ *   - pivot (ceiling mount)
+ *   - rope from pivot to bob
+ *   - bob hanging at angleDeg from pivot at distance ropeLength
+ *   - angle-arc decoration labeled θ
+ *   - tension vector T along the rope toward the pivot
+ *   - weight vector mg pointing straight down
+ *
+ * All decorations are individual scene objects with `compositeRole` so the
+ * Inspector can show visibility toggles per role. Default roles that ship
+ * visible: rope, bob, theta, tension, weight. The pivot is the anchor and
+ * is always visible.
+ */
+const pendulumComposite: PrimitiveDefinition = {
+  type: "pendulum",
+  category: "mechanics",
+  label: "Pendulum (auto-decorated)",
+  description: "Pivot + rope + bob, with auto-rendered θ angle arc, tension T, and weight mg.",
+  anchors: ["center"],
+  params: [],
+  defaultDecorations: ["rope", "bob", "theta", "tension", "weight"],
+  composite: {
+    anchorType: "pendulum_pivot",
+    build: (anchorPos) => {
+      const ROPE_LENGTH = 180;
+      const ANGLE_DEG = 30;
+      return [
+        // 0: pivot (anchor)
+        {
+          type: "pendulum_pivot",
+          params: { barWidth: 90, hatchSpacing: 8 },
+          transform: anchorPos,
+          compositeRole: "pivot",
+        },
+        // 1: bob — placed at the end of the rope via pendulum_from
+        {
+          type: "pendulum_bob",
+          params: { radius: 22, angleDeg: ANGLE_DEG, ropeLength: ROPE_LENGTH, mass: 1, fill: "#fff" },
+          transform: { x: 0, y: 0 }, // solved
+          relations: [{ kind: "pendulum_from", target: "<anchor>" } as never],
+          compositeRole: "bob",
+        },
+        // 2: rope — drawn between pivot and bob
+        {
+          type: "rope",
+          params: { from: "<anchor>", to: "<bob>", color: "#444", thickness: 1.5 },
+          transform: { x: 0, y: 0 },
+          compositeRole: "rope",
+        },
+        // 3: angle-arc θ at the pivot
+        {
+          type: "angle_marker",
+          params: {
+            vertexX: 0, vertexY: 0,
+            fromAngleDeg: 0, toAngleDeg: ANGLE_DEG,
+            radius: 44, label: "θ", color: "#1f6feb",
+          },
+          transform: anchorPos,
+          relations: [{ kind: "origin_at", target: "<anchor>", anchor: "center" } as never],
+          compositeRole: "theta",
+        },
+        // 4: tension T — along the rope from bob toward pivot
+        {
+          type: "vector",
+          params: {
+            magnitude: 80,
+            angleDeg: 180 - ANGLE_DEG, // up-and-toward-pivot, in screen-y-down coords
+            color: "#1f6feb", thickness: 2, label: "T",
+          },
+          transform: { x: 0, y: 0 },
+          relations: [{ kind: "origin_at", target: "<bob>", anchor: "center" } as never],
+          compositeRole: "tension",
+        },
+        // 5: weight mg — straight down from the bob
+        {
+          type: "vector",
+          params: {
+            magnitude: 90, angleDeg: -90,
+            color: "#c0392b", thickness: 2, label: "mg",
+          },
+          transform: { x: 0, y: 0 },
+          relations: [{ kind: "origin_at", target: "<bob>", anchor: "center" } as never],
+          compositeRole: "weight",
+        },
+      ];
+    },
+  },
+  render: () => null, // composites never render directly; children do
+};
+
+/**
+ * Composite: Block on Incline
+ *   - incline (anchor)
+ *   - block resting on the incline at fraction 0.55
+ *   - gravity mg vector
+ *   - normal N vector (perpendicular to incline surface)
+ *   - friction f vector (up the incline)
+ *   - angle-arc θ at the incline base
+ */
+const blockOnInclineComposite: PrimitiveDefinition = {
+  type: "block_on_incline",
+  category: "mechanics",
+  label: "Block on incline (auto-decorated)",
+  description: "Incline + block, with gravity mg, normal N, friction f, and angle θ auto-rendered.",
+  anchors: ["center"],
+  params: [],
+  defaultDecorations: ["block", "gravity", "normal", "friction", "theta"],
+  composite: {
+    anchorType: "incline",
+    build: (anchorPos) => {
+      const ANGLE = 25;
+      const LENGTH = 280;
+      return [
+        // 0: incline (anchor)
+        {
+          type: "incline",
+          params: { length: LENGTH, angleDeg: ANGLE, thickness: 4, hatching: true },
+          transform: anchorPos,
+          compositeRole: "incline",
+        },
+        // 1: block on incline
+        {
+          type: "block",
+          params: { width: 70, height: 45, fill: "#fff", mass: 2 },
+          transform: { x: 0, y: 0 },
+          relations: [{ kind: "rests_on", target: "<anchor>", fraction: 0.55 } as never],
+          compositeRole: "block",
+        },
+        // 2: gravity mg (straight down, anchored to block)
+        {
+          type: "vector",
+          params: { magnitude: 100, angleDeg: -90, color: "#c0392b", thickness: 2.5, label: "mg" },
+          transform: { x: 0, y: 0 },
+          relations: [{ kind: "origin_at", target: "<block>", anchor: "center" } as never],
+          compositeRole: "gravity",
+        },
+        // 3: normal N (perpendicular to incline, outward)
+        {
+          type: "vector",
+          params: { magnitude: 90, angleDeg: 90 - ANGLE, color: "#1f6feb", thickness: 2.5, label: "N" },
+          transform: { x: 0, y: 0 },
+          relations: [{ kind: "origin_at", target: "<block>", anchor: "center" } as never],
+          compositeRole: "normal",
+        },
+        // 4: friction f (up the incline = opposite of motion direction)
+        {
+          type: "vector",
+          params: { magnitude: 42, angleDeg: 180 + ANGLE, color: "#e67e22", thickness: 2.5, label: "f" },
+          transform: { x: 0, y: 0 },
+          relations: [{ kind: "origin_at", target: "<block>", anchor: "center" } as never],
+          compositeRole: "friction",
+        },
+        // 5: angle-arc θ at the incline base
+        {
+          type: "angle_marker",
+          params: {
+            vertexX: 0, vertexY: 0,
+            fromAngleDeg: 0, toAngleDeg: ANGLE,
+            radius: 50, label: `${ANGLE}°`, color: "#1f6feb",
+          },
+          transform: anchorPos,
+          relations: [{ kind: "origin_at", target: "<anchor>", anchor: "center" } as never],
+          compositeRole: "theta",
+        },
+      ];
+    },
+  },
+  render: () => null,
+};
+
 export function registerAllPrimitives(): void {
   registerPrimitive(pivot);
   registerPrimitive(bob);
@@ -448,4 +654,7 @@ export function registerAllPrimitives(): void {
   registerPrimitive(axes);
   registerPrimitive(angleMarker);
   registerPrimitive(textLabel);
+  // composites
+  registerPrimitive(pendulumComposite);
+  registerPrimitive(blockOnInclineComposite);
 }
