@@ -197,9 +197,65 @@ const EMPTY_SCENE: FigurateScene = {
   objects: [],
 };
 
+/**
+ * A custom-built pendulum — pivot, rope, bob, and a tension vector
+ * (already pointing at the pivot). NO `compositeOf` or `compositeRole`
+ * metadata. The inference engine should:
+ *   1. Find the rope (params.from/to) and form a pivot+bob composite
+ *   2. Detect the tension vector (pointing at pivot) and assign it
+ *      the `tension` role
+ *   3. The Inspector's "Decorations" panel should appear, showing
+ *      toggles for the rope, bob, and tension.
+ */
+const CUSTOM_PENDULUM: FigurateScene = {
+  version: "0.1.0",
+  meta: { title: "Custom-built pendulum", subject: "physics:mechanics" },
+  canvas: { width: 900, height: 600, background: "#fafafa", grid: { enabled: true, spacing: 20, color: "#e8e8e8" } },
+  objects: [
+    {
+      id: "pivot1",
+      type: "pendulum_pivot",
+      params: { style: "hatched" },
+      transform: { x: 450, y: 120 },
+      zIndex: 1,
+    },
+    {
+      id: "bob1",
+      type: "pendulum_bob",
+      params: { radius: 22, color: "#2c3e50" },
+      transform: { x: 620, y: 320 },
+      zIndex: 2,
+    },
+    {
+      id: "rope1",
+      type: "rope",
+      params: { from: "pivot1", to: "bob1", color: "#34495e", thickness: 2 },
+      transform: { x: 0, y: 0 },
+      zIndex: 3,
+    },
+    {
+      id: "tension1",
+      type: "vector",
+      params: { magnitude: 110, color: "#3498db", label: "T" },
+      transform: { x: 620, y: 320 }, // anchored at bob
+      relations: [{ kind: "origin_at", target: "bob1", anchor: "center" }],
+      zIndex: 4,
+    },
+    {
+      id: "weight1",
+      type: "vector",
+      params: { magnitude: 90, color: "#e74c3c", label: "mg" },
+      transform: { x: 620, y: 320 }, // anchored at bob
+      relations: [{ kind: "origin_at", target: "bob1", anchor: "center" }],
+      zIndex: 4,
+    },
+  ],
+};
+
 export const SAMPLE_SCENES: Record<string, { label: string; scene: FigurateScene }> = {
   empty: { label: "(empty)", scene: EMPTY_SCENE },
   pendulum: { label: "Pendulum at 30°", scene: PENDULUM_30DEG },
   incline: { label: "Block on 25° incline", scene: BLOCK_ON_INCLINE },
   freebody: { label: "Free-body diagram", scene: FREE_BODY },
+  custom: { label: "Custom-built pendulum (no metadata)", scene: CUSTOM_PENDULUM },
 };

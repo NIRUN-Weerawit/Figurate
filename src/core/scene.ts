@@ -258,14 +258,15 @@ export const useSceneStore = create<SceneState>()(
               if (target) {
                 const dx = obj.transform.x - target.transform.x;
                 const dy = obj.transform.y - target.transform.y;
-                // Convert to angle: bob-to-pivot angle. The solver's
-                // `pendulum_from` uses polar (L, angleDeg) from pivot, so
-                // we want the angle from pivot to bob in screen-space.
-                // angleDeg = 0 means bob directly below pivot; positive
-                // means to the right. atan2(dx, -dy) gives that:
-                //   dx=0, dy<0 (bob below pivot) → atan2(0, +) = 0 ✓
-                //   dx>0, dy<0 (bob to lower-right) → positive angle ✓
-                const angleDeg = (Math.atan2(dx, -dy) * 180) / Math.PI;
+                // The solver's `pendulum_from` places the bob at:
+                //   px = pivot.x + L * sin(angleDeg)
+                //   py = pivot.y + L * cos(angleDeg)
+                // So: dx/L = sin(a), dy/L = cos(a)
+                //     a    = atan2(dx, dy)
+                // (NOT atan2(dx, -dy) — that would invert the Y axis
+                // and produce a wrong angle. Verified: for a=0, bob is
+                // directly below pivot, so dx=0, dy=L, atan2(0, L) = 0 ✓)
+                const angleDeg = (Math.atan2(dx, dy) * 180) / Math.PI;
                 if (Number.isFinite(angleDeg)) {
                   set((draft) => {
                     const o = draft.scene.objects.find((oo) => oo.id === id);

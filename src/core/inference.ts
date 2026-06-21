@@ -50,20 +50,14 @@ export function inferRoles(scene: FigurateScene): SceneObject[] {
   const groupByObj = new Map<string, string>();
 
   for (const anchor of anchors.values()) {
-    const groupId = anchor.compositeOf ?? `g_${anchor.id}`;
-    if (!anchor.compositeOf) {
-      const a = next.find((o) => o.id === anchor.id);
-      if (a) {
-        a.compositeOf = groupId;
-      }
-    }
+    // If the anchor has no existing composite, don't create one yet —
+    // wait for step 3c (rope-based detection) or step 3b (proximity
+    // detection) to find its natural group. Creating a default group
+    // here caused bob1 to end up in "g_bob1" while the rope's pivot
+    // ended up in "g_<random>", fragmenting the composite.
+    if (!anchor.compositeOf) continue;
+    const groupId = anchor.compositeOf;
     groupByObj.set(anchor.id, groupId);
-    // Mark the anchor with its primary role.
-    const a = next.find((o) => o.id === anchor.id);
-    if (a && !a.compositeRole) {
-      a.compositeRole = primaryRoleFor(anchor.type);
-    }
-
     // Walk relations outward from the anchor and assign roles.
     for (const rel of anchor.relations ?? []) {
       const targetId = "target" in rel ? rel.target : null;
@@ -94,27 +88,95 @@ export function inferRoles(scene: FigurateScene): SceneObject[] {
     }
   }
 
-  // Step 3b: For unattached anchor types (bobs, blocks, mass), look for
-  // nearby composite groups that they could anchor. E.g. a block placed
-  // near an incline should join the incline's group, becoming the "block"
-  // role, even without an explicit `rests_on` relation. This handles
-  // the case where the user dropped a block near an incline but hasn't
-  // dragged it onto the surface yet (so the snap hasn't fired).
+  // Step 3c: Detect rope-based composites. If a rope primitive has
+  // `params.from` and `params.to` set to two object ids, look at the
+  // pair and form a composite: pivot+bob, pivot+mass, etc.
+  // The pivot is the one that has type "pendulum_pivot" (or similar),
+  // the other is the bob.
+  for (const obj of next) {
+    if (obj.type !== "rope") continue;
+    const fromId = obj.params.from as string | undefined;
+    const toId = obj.params.to as string | undefined;
+    if (!fromId || !toId) continue;
+    if (fromId === toId) continue;
+    const fromObj = next.find((o) => o.id === fromId);
+    const toObj = next.find((o) => o.id === toId);
+    if (!fromObj || !toObj) continue;
+    // Identify which is the pivot and which is the bob by type.
+    let pivot: SceneObject | undefined;
+    let bob: SceneObject | undefined;
+    if (fromObj.type === "pendulum_pivot") {
+      pivot = fromObj;
+      bob = toObj;
+    } else if (toObj.type === "pendulum_pivot") {
+      pivot = toObj;
+      bob = fromObj;
+    } else {
+      // Neither is a typed pivot; default: the one higher (smaller y) is the pivot.
+      pivot = fromObj.transform.y < toObj.transform.y ? fromObj : toObj;
+      bob = pivot === fromObj ? toObj : fromObj;
+    }
+    if (pivot.compositeOf && !pivot.compositeRole) {
+      pivot.compositeRole = "pivot";
+    }
+    if (!pivot.compositeOf) {
+      const gid = "g_" + Math.random().toString(36).slice(2, 9);
+      pivot.compositeOf = gid;
+      pivot.compositeRole = "pivot";
+    }
+    if (bob && !bob.compositeOf) {
+      bob.compositeOf = pivot.compositeOf!;
+      bob.compositeRole = "bob";
+    }
+    if (!obj.compositeOf) {
+      obj.compositeOf = pivot.compositeOf!;
+      obj.compositeRole = "rope";
+    }
+  }
+
+  // Step 3d: For objects near a rope, infer they're part of the same
+  // composite as the rope. E.g. a vector near a bob, or an angle_marker
+  // near a pivot, should join the same group.
   for (const obj of next) {
     if (obj.compositeOf) continue;
-    if (obj.type !== "block" && obj.type !== "pendulum_bob") continue;
-    // Find a nearby composite member of the same type-of-thing family.
-    // For a block, look for an incline; for a bob, look for a pivot.
-    const targetType = obj.type === "block" ? "incline" : "pendulum_pivot";
-    const nearbyTarget = next.find(
-      (o) =>
-        o.type === targetType &&
-        o.compositeOf &&
-        Math.hypot(o.transform.x - obj.transform.x, o.transform.y - obj.transform.y) < 250
-    );
-    if (nearbyTarget && nearbyTarget.compositeOf) {
-      obj.compositeOf = nearbyTarget.compositeOf;
-      obj.compositeRole = obj.type === "block" ? "block" : "bob";
+    if (obj.type === "rope") continue; // handled above
+    // Find the nearest rope in the scene. The rope primitive's
+    // `transform` is a placeholder (not the actual position); the
+    // real position is the midpoint of `from` and `to`. We compute
+    // it on the fly for the distance check.
+    let nearest: SceneObject | null = null;
+    let bestDist = Infinity;
+    for (const o of next) {
+      if (o.type !== "rope") continue;
+      const fromId = o.params.from as string | undefined;
+      const toId = o.params.to as string | undefined;
+      if (fromId && toId) {
+        const fromObj = next.find((oo) => oo.id === fromId);
+        const toObj = next.find((oo) => oo.id === toId);
+        if (fromObj && toObj) {
+          const mx = (fromObj.transform.x + toObj.transform.x) / 2;
+          const my = (fromObj.transform.y + toObj.transform.y) / 2;
+          const d = Math.hypot(mx - obj.transform.x, my - obj.transform.y);
+          if (d < bestDist) {
+            bestDist = d;
+            nearest = o;
+          }
+          continue;
+        }
+      }
+      // Fallback: use the rope's transform.
+      const d = Math.hypot(
+        o.transform.x - obj.transform.x,
+        o.transform.y - obj.transform.y
+      );
+      if (d < bestDist) {
+        bestDist = d;
+        nearest = o;
+      }
+    }
+    if (nearest && nearest.compositeOf && bestDist < 300) {
+      obj.compositeOf = nearest.compositeOf;
+      // The role will be inferred in step 4 if it's a vector.
     }
   }
 
@@ -130,13 +192,20 @@ export function inferRoles(scene: FigurateScene): SceneObject[] {
 }
 
 /**
- * For each vector in a composite without a `compositeRole`, look at its
- * direction relative to its anchor (the object it's `origin_at`-ing) and
- * assign the most likely role.
+ * For each vector in a composite without a `compositeRole`, assign a
+ * role based on:
+ *   1. The vector's `params.label` (if it says "T" → tension, "mg"/"W" →
+ *      weight, "N" → normal, "f"/"Fr" → friction). User-declared.
+ *   2. The vector's current direction (if it's already roughly aimed
+ *      correctly, it gets that role). Heuristic.
+ *   3. Fallback for a pendulum: the first unattached vector at the bob
+ *      gets `tension`, the second gets `weight`. (Order = insertion order.)
+ *   4. Fallback for a block: the first gets `gravity`, the second gets
+ *      `normal`, the third gets `friction`.
  *
- * Tolerance: ~10°. We don't want to be over-precise — the user might
- * have placed the vector slightly off, and we don't want to surprise
- * them by mis-classifying.
+ * This is the "smart decorations" engine — it lets the user build a
+ * physics figure by hand and the system figures out which vector is
+ * which, then the derivation layer re-aims them.
  */
 function inferVectorRoles(
   next: SceneObject[],
@@ -147,60 +216,106 @@ function inferVectorRoles(
     if (obj.compositeRole) continue;
     if (!obj.compositeOf) continue;
 
-    // Find the anchor of this composite: the bob or block.
+    // 1. Label-based hint (user has named the vector).
+    const label = (obj.params.label as string ?? "").trim();
+    const upper = label.toUpperCase();
+    if (upper === "T" || upper === "FT" || upper === "F_T") {
+      obj.compositeRole = "tension";
+      continue;
+    }
+    if (upper === "MG" || upper === "W" || upper === "F_G" || upper === "FG" || upper === "WEIGHT") {
+      obj.compositeRole = "weight";
+      continue;
+    }
+    if (upper === "N" || upper === "FN" || upper === "F_N") {
+      obj.compositeRole = "normal";
+      continue;
+    }
+    if (upper === "F" || upper === "FR" || upper === "FRICTION" || upper === "F_F" || upper === "FF") {
+      obj.compositeRole = "friction";
+      continue;
+    }
+
+    // 2. Direction-based heuristic — but only if the vector is *clearly*
+    // aimed at the right target. Tolerance is 25° (not 12°) so a slightly
+    // off vector still gets recognized.
     const anchor = next.find(
       (o) => o.compositeOf === obj.compositeOf &&
              (o.compositeRole === "bob" || o.compositeRole === "block")
     );
     if (!anchor) continue;
-
     const angleDeg = (obj.params.angleDeg as number) ?? 0;
     if (anchor.compositeRole === "bob") {
-      // Find the pivot of this composite.
       const pivot = next.find(
         (o) => o.compositeOf === obj.compositeOf && o.compositeRole === "pivot"
       );
       if (pivot) {
-        // Vector points from anchor toward pivot = tension.
         const dy = pivot.transform.y - anchor.transform.y;
         const dx = pivot.transform.x - anchor.transform.x;
-        // Use the flipped-y convention (see derivation.ts).
         const targetAngle = Math.atan2(-dy, dx) * (180 / Math.PI);
-        if (angleDiff(angleDeg, targetAngle) < 12) {
+        if (angleDiff(angleDeg, targetAngle) < 25) {
           obj.compositeRole = "tension";
           continue;
         }
       }
-      // Vector pointing down (270° in vector convention) = weight.
-      if (angleDiff(angleDeg, 270) < 12) {
+      if (angleDiff(angleDeg, 270) < 25) {
         obj.compositeRole = "weight";
         continue;
       }
     }
     if (anchor.compositeRole === "block") {
-      // Find the incline of this composite.
       const incline = next.find(
         (o) => o.compositeOf === obj.compositeOf && o.compositeRole === "incline"
       );
       if (incline) {
         const inclineAngle = (incline.params.angleDeg as number) ?? 0;
-        if (angleDiff(angleDeg, inclineAngle) < 12) {
-          // Vector parallel to slope (uphill) = friction.
+        if (angleDiff(angleDeg, inclineAngle) < 25) {
           obj.compositeRole = "friction";
           continue;
         }
-        if (angleDiff(angleDeg, inclineAngle + 90) < 12) {
-          // Perpendicular = normal.
+        if (angleDiff(angleDeg, inclineAngle + 90) < 25) {
           obj.compositeRole = "normal";
           continue;
         }
       }
-      // Vector pointing down on a block (with no incline) = gravity.
-      if (angleDiff(angleDeg, 270) < 12) {
+      if (angleDiff(angleDeg, 270) < 25) {
         obj.compositeRole = "gravity";
         continue;
       }
     }
+  }
+
+  // 3. Fallback for unattached vectors: assign roles in insertion order.
+  // For each composite with a bob, the first untagged vector at the bob
+  // gets `tension`, the second gets `weight`. This handles the case
+  // where the user just dropped unlabeled vectors near the bob.
+  const compositeBuckets = new Map<string, SceneObject[]>();
+  for (const obj of next) {
+    if (obj.type !== "vector") continue;
+    if (obj.compositeRole) continue;
+    if (!obj.compositeOf) continue;
+    const list = compositeBuckets.get(obj.compositeOf) ?? [];
+    list.push(obj);
+    compositeBuckets.set(obj.compositeOf, list);
+  }
+  for (const [, vectors] of compositeBuckets) {
+    // Find the anchor type to decide which roles to assign.
+    const anchor = next.find(
+      (o) => compositeBuckets.size > 0 &&
+             (o.compositeRole === "bob" || o.compositeRole === "block") &&
+             vectors.some((v) => v.compositeOf === o.compositeOf)
+    );
+    if (!anchor) continue;
+    // Default role order depends on anchor type.
+    const roleOrder =
+      anchor.compositeRole === "bob"
+        ? ["tension", "weight", "tension", "weight"]
+        : ["gravity", "normal", "friction"];
+    vectors.forEach((v, i) => {
+      if (!v.compositeRole) {
+        v.compositeRole = roleOrder[i % roleOrder.length];
+      }
+    });
   }
 }
 
