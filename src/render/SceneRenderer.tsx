@@ -24,6 +24,7 @@ import { getPrimitive } from "../core/registry";
 import type { DerivedCache } from "../core/derivation";
 import { findSnapTarget, type SnapCandidate } from "../core/snap";
 import { ensureDefaultAttachPoints } from "../core/snap";
+import { FBDRenderer } from "./FBDRenderer";
 
 // Make sure each primitive has at least default attach points registered.
 // Idempotent — safe to call at module load.
@@ -45,6 +46,9 @@ interface SceneRendererProps {
   /** Apply a snap target on mouseup. Creates the relation and finalizes
    *  the drag. Re-runs inference so the smart decorations activate. */
   onApplySnap: (candidate: SnapCandidate) => void;
+  /** The selected object's free-body diagram, with user overrides applied.
+   *  If null, no FBD is shown. */
+  fbdGroup: import("../core/forces").ForceGroup | null;
 }
 
 export function SceneRenderer({
@@ -59,6 +63,7 @@ export function SceneRenderer({
   onNudge,
   onCommitDrag,
   onApplySnap,
+  fbdGroup,
 }: SceneRendererProps) {
   // Sort by zIndex then by insertion order
   const sorted = useMemo(
@@ -170,6 +175,10 @@ export function SceneRenderer({
           pointerEvents="none"
         />
       )}
+      {/* FBD overlay — renders on top of objects but below the selection
+          circles. Each force is an arrow with a label. The user toggles
+          which forces to show in the Inspector. */}
+      <FBDRenderer group={fbdGroup} />
     </svg>
   );
 }

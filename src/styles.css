@@ -59,6 +59,27 @@ html, body, #root {
   font-weight: 600;
   font-size: 16px;
 }
+
+/* Toast notification (e.g. "Detected 5 forces on 2 objects") */
+.toast {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-size: 12px;
+  z-index: 1000;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  animation: toast-in 0.2s ease-out;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
 .brand-tag {
   color: var(--text-dim);
   font-size: 11px;
@@ -330,6 +351,105 @@ main.canvas {
   width: 100%;
 }
 .btn-danger:hover { background: #a83224; }
+
+/* Free-body diagram (FBD) section in the Inspector */
+.fbd-section {
+  border-top: 1px solid var(--panel-border);
+  padding-top: 12px;
+}
+.fbd-section h4 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.fbd-section .hint {
+  margin: 0 0 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+.fbd-master {
+  background: var(--panel-light);
+  padding: 8px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+.fbd-master label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.fbd-master input[type="checkbox"] {
+  cursor: pointer;
+}
+.fbd-forces {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fbd-force-row {
+  background: var(--panel-light);
+  padding: 8px;
+  border-radius: 4px;
+  border-left: 3px solid transparent;
+}
+.fbd-force-row .fbd-force-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 4px;
+  cursor: pointer;
+}
+.fbd-force-row .fbd-formula {
+  margin-left: auto;
+  font-family: serif;
+  font-style: italic;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.fbd-force-controls {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 4px 22px;
+}
+.fbd-force-controls label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 1;
+}
+.fbd-force-controls input {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
+  padding: 3px 5px;
+  color: var(--text);
+  font-size: 11px;
+  width: 100%;
+}
+.fbd-description {
+  margin: 4px 0 0 22px;
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+/* FBD layer in the SVG canvas */
+.fbd-layer {
+  pointer-events: none;
+}
+.fbd-force {
+  pointer-events: none;
+}
 
 /* DSL editor */
 .dsl-editor {

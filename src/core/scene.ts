@@ -57,6 +57,23 @@ interface SceneState {
   setCompositeVisible: (compositeOf: string, visible: boolean) => void;
   /** Toggle visibility on every decoration of a given role within a composite. */
   setRoleVisible: (compositeOf: string, role: string, visible: boolean) => void;
+  // ── Free-body diagram (FBD) state ──
+  /** Map of `objectId → Record<key, value>`. The store-only state for
+   *  the FBD overlay. Keys:
+   *    "_visible"  : master toggle (boolean)
+   *    "<type>"    : per-force enabled flag (boolean)
+   *    "_mag_<t>"  : per-force magnitude override (number)
+   *    "_dir_<t>"  : per-force direction override (number, degrees)
+   *  Not stored in the scene file. */
+  fbdEnabled: Record<string, Record<string, unknown>>;
+  /** Master toggle: is the FBD overlay shown for this object? */
+  setFbdVisible: (objectId: string, visible: boolean) => void;
+  /** Toggle a single force type for an object. */
+  setFbdForceEnabled: (objectId: string, forceType: string, enabled: boolean) => void;
+  /** Update the magnitude of a force in the FBD. */
+  setFbdForceMagnitude: (objectId: string, forceType: string, magnitude: number) => void;
+  /** Update the direction (degrees) of a force in the FBD. */
+  setFbdForceDirection: (objectId: string, forceType: string, directionDeg: number) => void;
   /** Move an object's transform by a delta in world coords (used for group drag). */
   nudge: (ids: string[], dx: number, dy: number) => void;
 
@@ -396,6 +413,40 @@ export const useSceneStore = create<SceneState>()(
               obj.visible = visible;
             }
           }
+        });
+      },
+
+      // ── FBD state (not stored in scene; lives in the store only) ──
+      fbdEnabled: {},
+
+      setFbdVisible: (objectId, visible) => {
+        set((draft) => {
+          if (!draft.fbdEnabled[objectId]) draft.fbdEnabled[objectId] = {};
+          // We use a special "_visible" key for the master toggle.
+          draft.fbdEnabled[objectId]["_visible"] = visible;
+        });
+      },
+
+      setFbdForceEnabled: (objectId, forceType, enabled) => {
+        set((draft) => {
+          if (!draft.fbdEnabled[objectId]) draft.fbdEnabled[objectId] = {};
+          draft.fbdEnabled[objectId][forceType] = enabled;
+        });
+      },
+
+      setFbdForceMagnitude: (objectId, forceType, magnitude) => {
+        set((draft) => {
+          if (!draft.fbdEnabled[objectId]) draft.fbdEnabled[objectId] = {};
+          // Stash magnitude overrides alongside the enabled flag. Use a
+          // namespaced key so it doesn't collide with the boolean toggles.
+          draft.fbdEnabled[objectId][`_mag_${forceType}`] = magnitude;
+        });
+      },
+
+      setFbdForceDirection: (objectId, forceType, directionDeg) => {
+        set((draft) => {
+          if (!draft.fbdEnabled[objectId]) draft.fbdEnabled[objectId] = {};
+          draft.fbdEnabled[objectId][`_dir_${forceType}`] = directionDeg;
         });
       },
 

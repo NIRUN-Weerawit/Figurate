@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { Toolbar } from "./ui/Toolbar";
 import { Library } from "./ui/Library";
 import { Inspector } from "./ui/Inspector";
@@ -6,6 +6,7 @@ import { SceneRenderer } from "./render/SceneRenderer";
 import { DSLEditor } from "./ui/DSLEditor";
 import { useSceneStore } from "./core/scene";
 import { SAMPLE_SCENES } from "./samples";
+import { computeForces, applyFbdOverrides, detectAllForces } from "./core/forces";
 
 export function App() {
   const scene = useSceneStore((s) => s.scene);
@@ -24,6 +25,21 @@ export function App() {
   const redo = useSceneStore((s) => s.redo);
   const removeObject = useSceneStore((s) => s.removeObject);
   const loadScene = useSceneStore((s) => s.loadScene);
+  const fbdEnabled = useSceneStore((s) => s.fbdEnabled);
+
+  // Compute the FBD force group for the currently-selected object, with
+  // the user's per-force overrides applied. Re-runs whenever the scene
+  // (positions, relations) or the FBD overrides change.
+  const fbdGroup = useMemo(() => {
+    if (!selectedId) return null;
+    const obj = scene.objects.find((o) => o.id === selectedId);
+    if (!obj) return null;
+    const overrides = fbdEnabled[selectedId];
+    // Master toggle: if _visible isn't true, skip.
+    if (overrides && overrides["_visible"] === false) return null;
+    const group = computeForces(obj, scene);
+    return applyFbdOverrides(group, overrides);
+  }, [selectedId, scene, fbdEnabled]);
 
   // load a sample scene on first mount so the canvas isn't blank
   useEffect(() => {
@@ -31,6 +47,7 @@ export function App() {
       const params = new URLSearchParams(window.location.search);
       const demo = params.get("demo");
       const sample = params.get("sample");
+      const fbd = params.get("fbd");
       if (demo === "pendulum-composite") {
         // Drop a freshly-built pendulum composite so we can verify the
         // auto-decoration renders correctly.
@@ -42,6 +59,20 @@ export function App() {
       } else if (sample && SAMPLE_SCENES[sample]) {
         // ?sample=incline, ?sample=pendulum, ?sample=freebody
         loadScene(SAMPLE_SCENES[sample].scene, `load ${sample} sample`);
+        if (fbd === "on") {
+          // Auto-trigger "Detect forces" for the loaded sample. This
+          // makes testing easy: ?sample=incline&fbd=on loads the incline
+          // and turns on FBD for every object.
+          setTimeout(() => {
+            const summary = detectAllForces(useSceneStore.getState().scene);
+            for (const item of summary) {
+              useSceneStore.getState().setFbdVisible(item.objectId, true);
+            }
+            if (summary.length > 0) {
+              useSceneStore.getState().select(summary[0].objectId);
+            }
+          }, 100);
+        }
       } else {
         loadScene(SAMPLE_SCENES.pendulum.scene, "load initial sample");
       }
@@ -118,6 +149,7 @@ export function App() {
               applySnap(candidate);
               commit("snap");
             }}
+            fbdGroup={fbdGroup}
           />
           <div className="canvas-hint">
             Click to select · Shift+click to add · drag on empty canvas to marquee-select · drag to move · Alt+drag for constraint-aware.

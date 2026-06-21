@@ -15,6 +15,7 @@
 import { useSceneStore } from "../core/scene";
 import { getPrimitive } from "../core/registry";
 import type { SceneObject } from "../core/dsl";
+import { computeForces, applyFbdOverrides } from "../core/forces";
 
 const ROLE_LABELS: Record<string, string> = {
   pivot: "Pivot (ceiling mount)",
@@ -40,6 +41,11 @@ export function Inspector() {
   const removeObject = useSceneStore((s) => s.removeObject);
   const solve = useSceneStore((s) => s.solve);
   const setRoleVisible = useSceneStore((s) => s.setRoleVisible);
+  const fbdEnabled = useSceneStore((s) => s.fbdEnabled);
+  const setFbdVisible = useSceneStore((s) => s.setFbdVisible);
+  const setFbdForceEnabled = useSceneStore((s) => s.setFbdForceEnabled);
+  const setFbdForceMagnitude = useSceneStore((s) => s.setFbdForceMagnitude);
+  const setFbdForceDirection = useSceneStore((s) => s.setFbdForceDirection);
 
   // Multi-select view
   if (selectedIds.length > 1) {
@@ -192,8 +198,123 @@ export function Inspector() {
             Delete object
           </button>
         </section>
+
+        {/* FBD (free-body diagram) section. Shows all detectable forces
+            on this object. Master toggle + per-force checkboxes + magnitude
+            and direction inputs. Computed on the fly from the object's
+            relations and properties. */}
+        <FbdSection
+          obj={obj}
+          fbdEnabled={fbdEnabled[obj.id]}
+          onSetVisible={(v) => setFbdVisible(obj.id, v)}
+          onSetForceEnabled={(ft, e) => setFbdForceEnabled(obj.id, ft, e)}
+          onSetForceMagnitude={(ft, m) => setFbdForceMagnitude(obj.id, ft, m)}
+          onSetForceDirection={(ft, d) => setFbdForceDirection(obj.id, ft, d)}
+        />
       </div>
     </aside>
+  );
+}
+
+function FbdSection({
+  obj,
+  fbdEnabled,
+  onSetVisible,
+  onSetForceEnabled,
+  onSetForceMagnitude,
+  onSetForceDirection,
+}: {
+  obj: SceneObject;
+  fbdEnabled: Record<string, unknown> | undefined;
+  onSetVisible: (v: boolean) => void;
+  onSetForceEnabled: (forceType: string, enabled: boolean) => void;
+  onSetForceMagnitude: (forceType: string, mag: number) => void;
+  onSetForceDirection: (forceType: string, deg: number) => void;
+}) {
+  const scene = useSceneStore((s) => s.scene);
+  // Re-compute the FBD every time the scene changes. The user's overrides
+  // are applied separately via `applyFbdOverrides`.
+  const group = computeForces(obj, scene);
+  const visible = fbdEnabled ? fbdEnabled["_visible"] !== false : false;
+  // Count present forces (the system thinks these are real)
+  const present = group.forces.filter((f) => f.present);
+  return (
+    <section className="fbd-section">
+      <h4>Free-body diagram</h4>
+      <p className="hint">
+        Auto-detected forces acting on this object. Toggle to show/hide each.
+      </p>
+      <div className="fbd-master">
+        <label>
+          <input
+            type="checkbox"
+            checked={visible}
+            onChange={(e) => onSetVisible(e.target.checked)}
+          />
+          <span>Show FBD ({present.length} force{present.length === 1 ? "" : "s"} detected)</span>
+        </label>
+      </div>
+      {visible && (
+        <div className="fbd-forces">
+          {group.forces.filter((f) => f.present).map((f) => {
+            const enabled = fbdEnabled?.[f.type];
+            const mag = fbdEnabled?.[`_mag_${f.type}`];
+            const dir = fbdEnabled?.[`_dir_${f.type}`];
+            return (
+              <div key={f.type} className="fbd-force-row">
+                <label className="fbd-force-label">
+                  <input
+                    type="checkbox"
+                    checked={typeof enabled === "boolean" ? enabled : f.enabled}
+                    onChange={(e) => onSetForceEnabled(f.type, e.target.checked)}
+                  />
+                  <span style={{ color: f.color, fontWeight: "bold" }}>
+                    {f.label}
+                  </span>
+                  <span className="fbd-formula">{f.formula}</span>
+                </label>
+                {typeof enabled === "boolean" ? enabled : f.enabled ? (
+                  <div className="fbd-force-controls">
+                    <label>
+                      <span className="unit">mag</span>
+                      <input
+                        type="number"
+                        min={10}
+                        max={500}
+                        step={5}
+                        value={typeof mag === "number" ? mag : f.magnitude}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          if (!Number.isNaN(v)) onSetForceMagnitude(f.type, v);
+                        }}
+                      />
+                    </label>
+                    <label>
+                      <span className="unit">dir°</span>
+                      <input
+                        type="number"
+                        min={-360}
+                        max={360}
+                        step={5}
+                        value={typeof dir === "number" ? dir : f.directionDeg}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          if (!Number.isNaN(v)) onSetForceDirection(f.type, v);
+                        }}
+                      />
+                    </label>
+                  </div>
+                ) : null}
+                <p className="fbd-description">{f.description}</p>
+              </div>
+            );
+          })}
+          {present.length === 0 && (
+            <p className="hint">No forces auto-detected. The FBD is empty for this object.</p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
